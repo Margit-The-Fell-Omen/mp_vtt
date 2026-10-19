@@ -1,5 +1,6 @@
 #include "app/Application.h"
 
+#include "app/Theme.h"
 #include "notes/MarkdownRenderer.h"
 
 #include <glad/glad.h>
@@ -115,6 +116,8 @@ bool Application::init() {
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
     ImGuiIO& io = ImGui::GetIO();
+    applyTheme(m_settings.theme);
+    loadFonts(io);
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable |
                       ImGuiConfigFlags_NavEnableKeyboard;
     m_iniPath = defaultIniPath();
@@ -197,6 +200,87 @@ void Application::selectNote(const std::string& relativePath) {
     m_editorDirty = false;
 }
 
+void Application::requestOpenNote(const std::string& relativePath) {
+    if (relativePath == m_selectedPath) {
+        return;
+    }
+    if (m_editorDirty) {
+        m_promptUnsaved = true;
+        m_pendingOpen = relativePath;
+        m_quitRequested = false;
+        return;
+    }
+    selectNote(relativePath);
+}
+
+void Application::beginRename(const std::string& relativePath) {
+    m_renameTarget = relativePath;
+    std::snprintf(m_renameName, sizeof(m_renameName), "%s",
+                  fs::path(relativePath).filename().string().c_str());
+    m_renameOpen = true;
+}
+
+void Application::doRename() {
+    std::string name = m_renameName;
+    m_renameOpen = false;
+    if (name.empty() || fs::path(m_renameTarget).filename() == name) {
+        return;
+    }
+    fs::path parent = fs::path(m_renameTarget).parent_path();
+    fs::path newRel = parent / name;
+    if (m_notes.rename(m_renameTarget, newRel.string())) {
+        m_notes.rescan(m_notes.root());
+        if (m_selectedPath == m_renameTarget) {
+            m_selectedPath = newRel.string();
+        }
+    }
+}
+
+void Application::beginDelete(const std::string& relativePath) {
+    m_deleteTarget = relativePath;
+    m_deleteOpen = true;
+}
+
+void Application::doDelete() {
+    m_deleteOpen = false;
+    if (m_notes.remove(m_deleteTarget)) {
+        m_notes.rescan(m_notes.root());
+        if (m_selectedPath == m_deleteTarget) {
+            m_selectedPath.clear();
+            m_editorBuffer.clear();
+            m_editorDirty = false;
+        }
+    }
+}
+
+void Application::requestQuit() {
+    if (m_editorDirty) {
+        m_promptUnsaved = true;
+        m_pendingOpen.clear();
+        m_quitRequested = true;
+    } else {
+        glfwSetWindowShouldClose(static_cast<GLFWwindow*>(m_window), GLFW_TRUE);
+    }
+}
+
+void Application::applySettingsTheme() {
+    applyTheme(m_settings.theme);
+}
+
+void Application::saveSettingsNow() {
+    GLFWwindow* window = static_cast<GLFWwindow*>(m_window);
+    int w = 0;
+    int h = 0;
+    glfwGetWindowSize(window, &w, &h);
+    m_settings.windowWidth = w;
+    m_settings.windowHeight = h;
+    m_settings.lastProjectPath = m_project.rootPath();
+    m_settings.lastImagesPath = m_images.root().string();
+    m_settings.save(m_database);
+    m_savedW = w;
+    m_savedH = h;
+}
+
 void Application::createNewNote() {
     if (!m_notes.hasRoot()) {
         // No folder yet; guide the user to pick one first.
@@ -220,10 +304,12 @@ void Application::createNewNote() {
 }
 
 // Recursively renders the note tree. Directories are collapsible nodes,
-// files are clickable leaf entries.
+// files are clickable leaf entries; both support a right-click context menu.
 static void drawTree(const fs::path& dir, NoteManager& notes,
                      const std::string& selected,
-                     const std::function<void(const std::string&)>& onSelect) {
+                     const std::function<void(const std::string&)>& onSelect,
+                     const std::function<void(const std::string&)>& onRename,
+                     const std::function<void(const std::string&)>& onDelete) {
     std::vector<NoteManager::Entry> entries;
     for (const auto& e : notes.entries(dir)) {
         if (e.path.parent_path() == dir) {
@@ -233,21 +319,41 @@ static void drawTree(const fs::path& dir, NoteManager& notes,
 
     for (const auto& e : entries) {
         std::string label = e.path.filename().string();
-        std::string id = "##" + e.path.string();
+        std::string rel = e.path.string();
+
+        ImGui::PushID(rel.c_str());
 
         if (e.isDir) {
             ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
                                        ImGuiTreeNodeFlags_SpanAvailWidth;
-            if (ImGui::TreeNodeEx(id.c_str(), flags, "%s/", label.c_str())) {
-                drawTree(e.path, notes, selected, onSelect);
+            bool opened = ImGui::TreeNodeEx("%s/", flags, "%s", label.c_str());
+            if (opened) {
+                drawTree(e.path, notes, selected, onSelect, onRename, onDelete);
                 ImGui::TreePop();
             }
+            if (ImGui::BeginPopupContextItem()) {
+                if (ImGui::MenuItem("Rename")) {
+                    onRename(rel);
+                }
+                ImGui::EndPopup();
+            }
         } else {
-            bool isSelected = (selected == e.path.string());
+            bool isSelected = (selected == rel);
             if (ImGui::Selectable(label.c_str(), isSelected)) {
-                onSelect(e.path.string());
+                onSelect(rel);
+            }
+            if (ImGui::BeginPopupContextItem()) {
+                if (ImGui::MenuItem("Rename")) {
+                    onRename(rel);
+                }
+                if (ImGui::MenuItem("Delete")) {
+                    onDelete(rel);
+                }
+                ImGui::EndPopup();
             }
         }
+
+        ImGui::PopID();
     }
 }
 
@@ -267,8 +373,19 @@ void Application::drawMenuBar() {
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Quit")) {
-                glfwSetWindowShouldClose(static_cast<GLFWwindow*>(m_window),
-                                         GLFW_TRUE);
+                requestQuit();
+            }
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("View")) {
+            const char* themes[] = {"dark", "light", "classic"};
+            for (const char* t : themes) {
+                bool checked = (m_settings.theme == t);
+                if (ImGui::MenuItem(t, nullptr, checked)) {
+                    m_settings.theme = t;
+                    applySettingsTheme();
+                    m_settings.save(m_database);
+                }
             }
             ImGui::EndMenu();
         }
@@ -318,7 +435,9 @@ void Application::drawNotesPanel() {
     ImGui::BeginChild("notes_tree", ImVec2(240, 0), ImGuiChildFlags_Borders);
     if (m_notes.hasRoot()) {
         drawTree(fs::path(), m_notes, m_selectedPath,
-                 [this](const std::string& p) { selectNote(p); });
+                 [this](const std::string& p) { requestOpenNote(p); },
+                 [this](const std::string& p) { beginRename(p); },
+                 [this](const std::string& p) { beginDelete(p); });
     } else {
         ImGui::TextDisabled("Open a notes folder to begin.");
     }
@@ -356,7 +475,8 @@ void Application::drawNotesPanel() {
     ImGui::EndChild();
 
     ImGui::BeginChild("preview", ImVec2(0, previewH), ImGuiChildFlags_Borders);
-    MarkdownRenderer::render(m_editorBuffer);
+    MarkdownRenderer::render(m_editorBuffer,
+                             m_notes.absolute(m_selectedPath).parent_path());
     ImGui::EndChild();
 
     ImGui::EndChild();
@@ -764,6 +884,79 @@ void Application::draw() {
             ImGui::EndPopup();
         }
     }
+
+    // Rename dialog.
+    if (m_renameOpen) {
+        ImGui::OpenPopup("Rename");
+        if (ImGui::BeginPopupModal("Rename", &m_renameOpen,
+                                   ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::InputText("New name", m_renameName, sizeof(m_renameName));
+            if (ImGui::Button("Rename")) {
+                doRename();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) {
+                m_renameOpen = false;
+            }
+            ImGui::EndPopup();
+        }
+    }
+
+    // Delete confirmation dialog.
+    if (m_deleteOpen) {
+        ImGui::OpenPopup("Delete note");
+        if (ImGui::BeginPopupModal("Delete note", &m_deleteOpen,
+                                   ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("Delete \"%s\"?", fs::path(m_deleteTarget).filename().string().c_str());
+            if (ImGui::Button("Delete")) {
+                doDelete();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) {
+                m_deleteOpen = false;
+            }
+            ImGui::EndPopup();
+        }
+    }
+
+    // Unsaved-changes prompt (switch note or quit).
+    if (m_promptUnsaved) {
+        ImGui::OpenPopup("Unsaved changes");
+        if (ImGui::BeginPopupModal("Unsaved changes", nullptr,
+                                   ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("Save changes to \"%s\"?",
+                        fs::path(m_selectedPath).filename().string().c_str());
+            if (ImGui::Button("Save")) {
+                m_notes.write(m_selectedPath, m_editorBuffer);
+                m_editorDirty = false;
+                m_promptUnsaved = false;
+                if (m_quitRequested) {
+                    glfwSetWindowShouldClose(
+                        static_cast<GLFWwindow*>(m_window), GLFW_TRUE);
+                } else if (!m_pendingOpen.empty()) {
+                    selectNote(m_pendingOpen);
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Discard")) {
+                m_editorDirty = false;
+                m_promptUnsaved = false;
+                if (m_quitRequested) {
+                    glfwSetWindowShouldClose(
+                        static_cast<GLFWwindow*>(m_window), GLFW_TRUE);
+                } else if (!m_pendingOpen.empty()) {
+                    selectNote(m_pendingOpen);
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) {
+                m_promptUnsaved = false;
+                m_pendingOpen.clear();
+                m_quitRequested = false;
+            }
+            ImGui::EndPopup();
+        }
+    }
 }
 
 void Application::newFrame() {
@@ -792,6 +985,20 @@ void Application::newFrame() {
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
     glfwSwapBuffers(window);
+
+    // Autosave window state when the user resizes (throttled).
+    {
+        int w = 0;
+        int h = 0;
+        glfwGetWindowSize(window, &w, &h);
+        if (w > 0 && h > 0 && (w != m_savedW || h != m_savedH)) {
+            double now = glfwGetTime();
+            if (now - m_lastSettingsSave >= 0.75) {
+                m_lastSettingsSave = now;
+                saveSettingsNow();
+            }
+        }
+    }
 
     // Render the projection window (its own context).
     m_projection.render();

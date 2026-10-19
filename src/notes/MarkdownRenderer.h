@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <string>
 
 namespace ab {
@@ -8,8 +9,9 @@ namespace ab {
 class MarkdownRenderer {
 public:
     // Renders `markdown` into the current ImGui context (call between
-    // ImGui::Begin/End).
-    static void render(const std::string& markdown);
+    // ImGui::Begin/End). Relative image URLs are resolved against `baseDir`.
+    static void render(const std::string& markdown,
+                       const std::filesystem::path& baseDir = {});
 };
 
 }  // namespace ab

@@ -1,16 +1,104 @@
 #include "notes/MarkdownRenderer.h"
 
+#include <glad/glad.h>
+
 #include <imgui.h>
 
 #include <md4c.h>
+#include <stb_image.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <filesystem>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace ab {
 
+namespace fs = std::filesystem;
+
 namespace {
+
+// A cached GPU texture for an inline image.
+struct ImageCacheEntry {
+    ImTextureID texture = 0;
+    int width = 0;
+    int height = 0;
+};
+
+// Resolves an image URL (possibly relative to baseDir) and returns a cached
+// ImGui texture + natural dimensions. Returns nullptr on failure.
+ImageCacheEntry* loadImageCache(const std::string& rawUrl,
+                                const fs::path& baseDir) {
+    static std::unordered_map<std::string, ImageCacheEntry> cache;
+
+    // Resolve the URL to a filesystem path.
+    std::string key = rawUrl;
+    fs::path path;
+    if (rawUrl.empty()) {
+        return nullptr;
+    }
+    if (rawUrl.rfind("http://", 0) == 0 || rawUrl.rfind("https://", 0) == 0 ||
+        rawUrl.rfind("data:", 0) == 0 || rawUrl.rfind("file://", 0) == 0) {
+        return nullptr;  // remote/data URLs unsupported for now
+    }
+
+    // Strip a URL fragment/query (rare in markdown, but be safe).
+    std::string cleaned = rawUrl;
+    if (auto hash = cleaned.find('#'); hash != std::string::npos) {
+        cleaned.erase(hash);
+    }
+
+    fs::path p(cleaned);
+    if (p.is_relative()) {
+        if (baseDir.empty()) {
+            return nullptr;
+        }
+        path = baseDir / p;
+    } else {
+        path = p;
+    }
+    key = path.string();
+
+    auto it = cache.find(key);
+    if (it != cache.end()) {
+        return &it->second;
+    }
+
+    int w = 0;
+    int h = 0;
+    int comp = 0;
+    stbi_set_flip_vertically_on_load(0);  // ImGui expects top-left origin
+    stbi_uc* data = stbi_load(key.c_str(), &w, &h, &comp, 4);
+    if (!data || w <= 0 || h <= 0) {
+        if (data) {
+            stbi_image_free(data);
+        }
+        // Cache a negative result implicitly by not inserting; cheap enough.
+        return nullptr;
+    }
+
+    unsigned int gltex = 0;
+    glGenTextures(1, &gltex);
+    glBindTexture(GL_TEXTURE_2D, gltex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                 data);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    stbi_image_free(data);
+
+    ImageCacheEntry entry;
+    entry.texture = static_cast<ImTextureID>(gltex);
+    entry.width = w;
+    entry.height = h;
+    cache[key] = entry;
+    return &cache[key];
+}
 
 // Per-block rendering state stack entry.
 struct BlockState {
@@ -25,6 +113,7 @@ struct BlockState {
 
 struct RenderContext {
     std::vector<BlockState> stack;
+    fs::path baseDir;
     bool firstTextOfParagraph = false;
     bool spanStrong = false;
     bool spanEm = false;
@@ -32,6 +121,7 @@ struct RenderContext {
     bool spanDel = false;
     bool spanUnderline = false;
     bool linkActive = false;
+    int inImage = 0;            // >0 while inside an <img> span (suppress alt)
     std::string linkHref;
 };
 
@@ -162,10 +252,26 @@ int enterSpan(MD_SPANTYPE type, void* detail, void* userdata) {
         }
         case MD_SPAN_IMG: {
             auto* d = static_cast<MD_SPAN_IMG_DETAIL*>(detail);
-            std::string alt;
-            // alt is rendered via nested text callbacks; here we only need src.
+            ctx->inImage++;
             std::string src(d->src.text, d->src.size);
-            ImGui::TextDisabled("(image: %s)", src.c_str());
+            ImageCacheEntry* img = loadImageCache(src, ctx->baseDir);
+            if (img) {
+                // Fit to a max on-screen size while preserving aspect ratio.
+                const float maxW = 480.0f;
+                const float maxH = 360.0f;
+                float scale = 1.0f;
+                if (img->width > maxW || img->height > maxH) {
+                    scale = std::min(maxW / img->width, maxH / img->height);
+                }
+                ImVec2 size(img->width * scale, img->height * scale);
+                ImGui::Image(img->texture, size);
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("%s (%dx%d)", src.c_str(), img->width,
+                                      img->height);
+                }
+            } else {
+                ImGui::TextDisabled("(image: %s)", src.c_str());
+            }
             break;
         }
         default:
@@ -197,6 +303,11 @@ int leaveSpan(MD_SPANTYPE type, void* /*detail*/, void* userdata) {
             ctx->linkActive = false;
             ctx->linkHref.clear();
             break;
+        case MD_SPAN_IMG:
+            if (ctx->inImage > 0) {
+                ctx->inImage--;
+            }
+            break;
         default:
             break;
     }
@@ -206,6 +317,11 @@ int leaveSpan(MD_SPANTYPE type, void* /*detail*/, void* userdata) {
 int textCallback(MD_TEXTTYPE type, const MD_CHAR* text, MD_SIZE size,
                  void* userdata) {
     auto* ctx = static_cast<RenderContext*>(userdata);
+
+    // Inside an image, the emitted text is the alt attribute; drop it.
+    if (ctx->inImage > 0) {
+        return 0;
+    }
 
     if (type == MD_TEXT_BR) {
         ImGui::NewLine();
@@ -265,8 +381,10 @@ int textCallback(MD_TEXTTYPE type, const MD_CHAR* text, MD_SIZE size,
 
 }  // namespace
 
-void MarkdownRenderer::render(const std::string& markdown) {
+void MarkdownRenderer::render(const std::string& markdown,
+                              const fs::path& baseDir) {
     RenderContext ctx;
+    ctx.baseDir = baseDir;
 
     MD_PARSER parser{};
     parser.abi_version = 0;

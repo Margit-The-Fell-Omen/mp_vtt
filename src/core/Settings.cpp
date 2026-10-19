@@ -64,6 +64,11 @@ void Settings::load(Database& db) {
         lastImagesPath = img;
     }
 
+    std::string theme = getString(db, "theme");
+    if (!theme.empty()) {
+        this->theme = theme;
+    }
+
     auto w = getInt(db, "window_width");
     if (w > 0) {
         windowWidth = static_cast<int>(w);
@@ -77,6 +82,7 @@ void Settings::load(Database& db) {
 void Settings::save(Database& db) const {
     setValue(db, "last_project_path", lastProjectPath);
     setValue(db, "last_images_path", lastImagesPath);
+    setValue(db, "theme", theme);
     setValue(db, "window_width", std::to_string(windowWidth));
     setValue(db, "window_height", std::to_string(windowHeight));
 }

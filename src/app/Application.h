@@ -35,7 +35,15 @@ private:
     void openNotesFolder(const fs::path& path);
     void openImagesFolder(const fs::path& path);
     void selectNote(const std::string& relativePath);
+    void requestOpenNote(const std::string& relativePath);
     void createNewNote();
+    void beginRename(const std::string& relativePath);
+    void doRename();
+    void beginDelete(const std::string& relativePath);
+    void doDelete();
+    void requestQuit();
+    void applySettingsTheme();
+    void saveSettingsNow();
 
     // Modal folder picker. Returns true when a folder was chosen (sets out).
     bool drawFolderPicker(const char* title, std::string& out);
@@ -62,6 +70,24 @@ private:
     std::string m_editorBuffer;
     std::string m_loadedPath;
     bool m_editorDirty = false;
+
+    // Rename / delete modals.
+    bool m_renameOpen = false;
+    std::string m_renameTarget;
+    char m_renameName[256] = {0};
+
+    bool m_deleteOpen = false;
+    std::string m_deleteTarget;
+
+    // Unsaved-changes prompt.
+    bool m_promptUnsaved = false;
+    std::string m_pendingOpen;
+    bool m_quitRequested = false;
+
+    // Live-resize autosave.
+    int m_savedW = -1;
+    int m_savedH = -1;
+    double m_lastSettingsSave = 0.0;
 
     // Folder picker state.
     bool m_pickerOpen = false;

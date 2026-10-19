@@ -85,6 +85,7 @@ FetchContent_MakeAvailable(glfw imgui md4c)
 add_executable(AdventureBoard
   src/main.cpp
   src/app/Application.cpp
+  src/app/Theme.cpp
   src/core/Database.cpp
   src/core/Settings.cpp
   src/initiative/InitiativeTracker.cpp
