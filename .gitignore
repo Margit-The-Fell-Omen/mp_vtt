@@ -1,0 +1,17 @@
+# Direnv
+.direnv/
+
+# Build output
+build/
+
+# Nix
+result
+result-*
+
+# Editor
+*.o
+compile_commands.json
+.cache/
+
+# ImGui runtime state
+imgui.ini
