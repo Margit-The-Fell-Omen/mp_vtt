@@ -85,6 +85,13 @@ FetchContent_MakeAvailable(glfw imgui md4c)
 add_executable(AdventureBoard
   src/main.cpp
   src/app/Application.cpp
+  src/core/Database.cpp
+  src/core/Settings.cpp
+  src/initiative/InitiativeTracker.cpp
+  src/notes/NoteManager.cpp
+  src/notes/MarkdownRenderer.cpp
+  src/projection/ImageStore.cpp
+  src/projection/ProjectionWindow.cpp
 )
 
 target_include_directories(AdventureBoard PRIVATE
