@@ -27,55 +27,45 @@ struct ImageCacheEntry {
     int height = 0;
 };
 
-// Resolves an image URL (possibly relative to baseDir) and returns a cached
-// ImGui texture + natural dimensions. Returns nullptr on failure.
 ImageCacheEntry* loadImageCache(const std::string& rawUrl,
                                 const fs::path& baseDir) {
     static std::unordered_map<std::string, ImageCacheEntry> cache;
 
-    // Resolve the URL to a filesystem path.
-    std::string key = rawUrl;
-    fs::path path;
     if (rawUrl.empty()) {
         return nullptr;
     }
     if (rawUrl.rfind("http://", 0) == 0 || rawUrl.rfind("https://", 0) == 0 ||
         rawUrl.rfind("data:", 0) == 0 || rawUrl.rfind("file://", 0) == 0) {
-        return nullptr;  // remote/data URLs unsupported for now
+        return nullptr;
     }
 
-    // Strip a URL fragment/query (rare in markdown, but be safe).
     std::string cleaned = rawUrl;
     if (auto hash = cleaned.find('#'); hash != std::string::npos) {
         cleaned.erase(hash);
     }
 
     fs::path p(cleaned);
-    if (p.is_relative()) {
-        if (baseDir.empty()) {
-            return nullptr;
-        }
-        path = baseDir / p;
-    } else {
-        path = p;
-    }
-    key = path.string();
+    fs::path path = p.is_relative() ? (baseDir.empty() ? fs::path() : baseDir / p)
+                                    : p;
+    std::string key = path.string();
 
     auto it = cache.find(key);
     if (it != cache.end()) {
         return &it->second;
     }
+    if (!fs::exists(path)) {
+        return nullptr;
+    }
 
     int w = 0;
     int h = 0;
     int comp = 0;
-    stbi_set_flip_vertically_on_load(0);  // ImGui expects top-left origin
+    stbi_set_flip_vertically_on_load(0);
     stbi_uc* data = stbi_load(key.c_str(), &w, &h, &comp, 4);
     if (!data || w <= 0 || h <= 0) {
         if (data) {
             stbi_image_free(data);
         }
-        // Cache a negative result implicitly by not inserting; cheap enough.
         return nullptr;
     }
 
@@ -100,30 +90,194 @@ ImageCacheEntry* loadImageCache(const std::string& rawUrl,
     return &cache[key];
 }
 
-// Per-block rendering state stack entry.
+// ---- Inline text accumulation -------------------------------------------
+//
+// We accumulate inline content into a plain string (with embedded color
+// markers) so that a single TextWrapped() call handles soft wrapping across
+// a whole paragraph. This avoids the buggy per-fragment TextUnformatted
+// layout that caused list items and following text to render on one line.
+
+constexpr char kColorMark = '\x01';  // sentinel: next char selects a style
+
+enum ColorMode {
+    kNormal = 0,
+    kStrong = 1,
+    kEm = 2,
+    kCode = 3,
+    kLink = 4,
+    kDel = 5,
+    kUnderline = 6,
+};
+
 struct BlockState {
     MD_BLOCKTYPE type = MD_BLOCK_DOC;
-    unsigned hLevel = 0;        // for H blocks
-    bool li = false;            // inside a list item
-    bool code = false;          // inside a code block (monospace, verbatim)
-    bool quote = false;         // inside a blockquote
-    bool table = false;         // inside a table
-    bool td = false;            // inside a table cell
+    unsigned hLevel = 0;
+    int listLevel = 0;       // nesting depth of lists
+    int counter = 0;         // running item number for ordered lists
+    bool li = false;         // inside a list item
+    bool inCode = false;     // inside a fenced code block
+    bool inQuote = false;    // inside a blockquote
+    bool tableCell = false;  // inside a table cell
+    int compact = 0;         // push count of colors (compact vs loose)
+};
+
+struct ListItemState {
+    bool ordered = false;
+    int number = 1;
+    bool hasContent = false;
 };
 
 struct RenderContext {
-    std::vector<BlockState> stack;
     fs::path baseDir;
-    bool firstTextOfParagraph = false;
+
+    // Inline accumulation buffer for the current paragraph.
+    std::string buf;
+
+    // Span nesting flags (for picking a color mode when text arrives).
     bool spanStrong = false;
     bool spanEm = false;
     bool spanCode = false;
     bool spanDel = false;
     bool spanUnderline = false;
     bool linkActive = false;
-    int inImage = 0;            // >0 while inside an <img> span (suppress alt)
-    std::string linkHref;
+
+    int inImage = 0;      // >0 while inside an <img> span
+
+    // Block structure.
+    std::vector<BlockState> stack;
+    std::vector<ListItemState> liStack;
+    bool startOfPara = true;
+    ColorMode lastMode = kNormal;
+    bool markerPending = false;   // a list marker is awaiting emission
+
+    // Helpers.
+    bool inList() const {
+        for (const auto& b : stack) {
+            if (b.type == MD_BLOCK_UL || b.type == MD_BLOCK_OL) {
+                return true;
+            }
+        }
+        return false;
+    }
+    BlockState* lastList() {
+        for (auto it = stack.rbegin(); it != stack.rend(); ++it) {
+            if (it->type == MD_BLOCK_UL || it->type == MD_BLOCK_OL) {
+                return &*it;
+            }
+        }
+        return nullptr;
+    }
+    ColorMode currentColorMode() const {
+        if (spanCode) return kCode;
+        if (linkActive) return kLink;
+        if (spanStrong) return kStrong;
+        if (spanEm) return kEm;
+        if (spanDel) return kDel;
+        if (spanUnderline) return kUnderline;
+        return kNormal;
+    }
 };
+
+// ---------- rendering helpers -------------------------------------------
+
+ImVec4 colorForMode(ColorMode m) {
+    switch (m) {
+        case kStrong:     return ImVec4(1.00f, 0.85f, 0.35f, 1.0f);
+        case kEm:         return ImVec4(0.55f, 0.80f, 0.55f, 1.0f);
+        case kLink:       return ImVec4(0.35f, 0.60f, 0.95f, 1.0f);
+        case kDel:        return ImVec4(0.55f, 0.55f, 0.55f, 1.0f);
+        case kUnderline:  return ImVec4(0.75f, 0.75f, 0.95f, 1.0f);
+        case kCode:       return ImVec4(0.76f, 0.80f, 0.86f, 1.0f);
+        case kNormal:
+        default:          return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+    }
+}
+
+// Renders the accumulated buffer to ImGui with soft wrapping and colors.
+void renderBuffer(RenderContext& ctx, bool indent) {
+    (void)indent;
+    if (ctx.buf.empty()) {
+        return;
+    }
+    // Remove a trailing softbreak space we might have appended.
+    if (!ctx.buf.empty() && ctx.buf.back() == ' ') {
+        ctx.buf.pop_back();
+    }
+    if (ctx.buf.empty()) {
+        return;
+    }
+
+    // Walk color-marked runs and emit TextWrapped segments.
+    std::string run;
+    ColorMode current = kNormal;
+    auto emitRun = [&]() {
+        if (run.empty()) {
+            return;
+        }
+        ImGui::PushStyleColor(ImGuiCol_Text, colorForMode(current));
+        ImGui::TextWrapped("%s", run.c_str());
+        ImGui::PopStyleColor();
+        run.clear();
+    };
+
+    for (size_t i = 0; i < ctx.buf.size(); ++i) {
+        char c = ctx.buf[i];
+        if (c == kColorMark && i + 1 < ctx.buf.size()) {
+            emitRun();
+            current = static_cast<ColorMode>(ctx.buf[++i]);
+        } else if (c == '\n') {
+            emitRun();
+            ImGui::NewLine();
+        } else {
+            run.push_back(c);
+        }
+    }
+    emitRun();
+    ctx.buf.clear();
+}
+
+void openParagraph(RenderContext& ctx) {
+    ctx.buf.clear();
+    ctx.startOfPara = true;
+    ctx.lastMode = kNormal;
+}
+
+// Emits a pending list-item marker into the buffer (bullet or number).
+void emitMarker(RenderContext& ctx) {
+    if (!ctx.markerPending) {
+        return;
+    }
+    ctx.markerPending = false;
+
+    bool ordered = false;
+    int number = 1;
+    if (!ctx.liStack.empty()) {
+        ordered = ctx.liStack.back().ordered;
+        number = ctx.liStack.back().number;
+        ctx.liStack.back().hasContent = true;
+    }
+    // The marker is plain text (no color mark), so it stays on the same
+    // wrapped line as the text that follows.
+    if (ordered) {
+        ctx.buf.append(std::to_string(number));
+        ctx.buf.append(". ");
+    } else {
+        ctx.buf.append("\xE2\x80\xA2 ");  // "• "
+    }
+}
+
+void closeParagraph(RenderContext& ctx) {
+    renderBuffer(ctx, ctx.inList());
+    ctx.buf.clear();
+    ctx.startOfPara = true;
+    ctx.lastMode = kNormal;
+    // Paragraph spacing after a block.
+    if (!ctx.inList()) {
+        ImGui::Dummy(ImVec2(0, 4));
+    }
+}
+
+// ---------- callbacks ----------------------------------------------------
 
 int enterBlock(MD_BLOCKTYPE type, void* detail, void* userdata) {
     auto* ctx = static_cast<RenderContext*>(userdata);
@@ -131,67 +285,86 @@ int enterBlock(MD_BLOCKTYPE type, void* detail, void* userdata) {
     st.type = type;
 
     switch (type) {
-        case MD_BLOCK_H: {
-            auto* d = static_cast<MD_BLOCK_H_DETAIL*>(detail);
-            st.hLevel = d->level;
+        case MD_BLOCK_H:
+            st.hLevel = static_cast<MD_BLOCK_H_DETAIL*>(detail)->level;
             break;
-        }
         case MD_BLOCK_CODE:
         case MD_BLOCK_HTML:
-            st.code = true;
+            st.inCode = true;
             break;
         case MD_BLOCK_QUOTE:
-            st.quote = true;
-            break;
-        case MD_BLOCK_TABLE:
-        case MD_BLOCK_THEAD:
-        case MD_BLOCK_TBODY:
-            st.table = true;
+            st.inQuote = true;
             break;
         case MD_BLOCK_TH:
         case MD_BLOCK_TD:
-            st.td = true;
+            st.tableCell = true;
             break;
         case MD_BLOCK_LI:
             st.li = true;
+            if (!ctx->stack.empty()) {
+                st.listLevel = 1;
+            }
             break;
         default:
             break;
+    }
+
+    // Track list nesting for indentation.
+    bool isList = (type == MD_BLOCK_UL || type == MD_BLOCK_OL);
+    if (isList) {
+        int depth = 0;
+        for (const auto& b : ctx->stack) {
+            if (b.type == MD_BLOCK_UL || b.type == MD_BLOCK_OL) {
+                ++depth;
+            }
+        }
+        st.listLevel = depth + 1;
     }
 
     ctx->stack.push_back(st);
 
     switch (type) {
         case MD_BLOCK_P:
-            ctx->firstTextOfParagraph = true;
+        case MD_BLOCK_H:
+            openParagraph(*ctx);
+            emitMarker(*ctx);
             break;
         case MD_BLOCK_UL:
         case MD_BLOCK_OL:
             ImGui::Indent();
             break;
-        case MD_BLOCK_LI:
-            ImGui::Bullet();
-            ImGui::SameLine();
-            break;
-        case MD_BLOCK_HR:
-            ImGui::Separator();
-            break;
-        case MD_BLOCK_H: {
-            // Distinguish heading levels via color.
-            const ImVec4 levels[] = {
-                ImVec4(1.00f, 0.95f, 0.80f, 1.0f),
-                ImVec4(0.95f, 0.90f, 0.70f, 1.0f),
-                ImVec4(0.90f, 0.85f, 0.62f, 1.0f),
-                ImVec4(0.85f, 0.82f, 0.62f, 1.0f),
-                ImVec4(0.80f, 0.80f, 0.65f, 1.0f),
-                ImVec4(0.75f, 0.78f, 0.68f, 1.0f),
-            };
-            int idx = static_cast<int>(st.hLevel);
-            if (idx < 1) idx = 1;
-            if (idx > 6) idx = 6;
-            ImGui::PushStyleColor(ImGuiCol_Text, levels[idx - 1]);
+        case MD_BLOCK_LI: {
+            // Determine whether the parent list is ordered, and bump its
+            // running counter for numbered items.
+            bool ordered = false;
+            int number = 1;
+            for (auto it = ctx->stack.rbegin(); it != ctx->stack.rend(); ++it) {
+                if (it->type == MD_BLOCK_OL) {
+                    ordered = true;
+                    number = ++(it->counter);
+                    break;
+                }
+                if (it->type == MD_BLOCK_UL) {
+                    break;
+                }
+            }
+            ctx->liStack.push_back(ListItemState{ordered, number, false});
+            ctx->markerPending = true;
             break;
         }
+        case MD_BLOCK_CODE:
+            ImGui::Indent();
+            break;
+        case MD_BLOCK_QUOTE:
+            ImGui::Indent();
+            break;
+        case MD_BLOCK_HR:
+            closeParagraph(*ctx);
+            ImGui::Separator();
+            break;
+        case MD_BLOCK_TABLE:
+            ImGui::Separator();
+            break;
         default:
             break;
     }
@@ -199,21 +372,28 @@ int enterBlock(MD_BLOCKTYPE type, void* detail, void* userdata) {
     return 0;
 }
 
-int leaveBlock(MD_BLOCKTYPE type, void* /*detail*/, void* userdata) {
+int leaveBlock(MD_BLOCKTYPE type, void* detail, void* userdata) {
     auto* ctx = static_cast<RenderContext*>(userdata);
+    (void)detail;
 
     switch (type) {
+        case MD_BLOCK_P:
+        case MD_BLOCK_H:
+        case MD_BLOCK_QUOTE:
+            closeParagraph(*ctx);
+            break;
+        case MD_BLOCK_LI:
+            closeParagraph(*ctx);
+            if (!ctx->liStack.empty()) {
+                ctx->liStack.pop_back();
+            }
+            break;
         case MD_BLOCK_UL:
         case MD_BLOCK_OL:
             ImGui::Unindent();
             break;
-        case MD_BLOCK_H:
-            ImGui::PopStyleColor();
-            ImGui::Dummy(ImVec2(0, 4));
-            break;
-        case MD_BLOCK_P:
-        case MD_BLOCK_QUOTE:
-            ImGui::Dummy(ImVec2(0, 4));
+        case MD_BLOCK_CODE:
+            ImGui::Unindent();
             break;
         default:
             break;
@@ -229,46 +409,32 @@ int enterSpan(MD_SPANTYPE type, void* detail, void* userdata) {
     auto* ctx = static_cast<RenderContext*>(userdata);
 
     switch (type) {
-        case MD_SPAN_STRONG:
-            ctx->spanStrong = true;
-            break;
-        case MD_SPAN_EM:
-            ctx->spanEm = true;
-            break;
-        case MD_SPAN_CODE:
-            ctx->spanCode = true;
-            break;
-        case MD_SPAN_DEL:
-            ctx->spanDel = true;
-            break;
-        case MD_SPAN_U:
-            ctx->spanUnderline = true;
-            break;
-        case MD_SPAN_A: {
-            auto* d = static_cast<MD_SPAN_A_DETAIL*>(detail);
+        case MD_SPAN_STRONG: ctx->spanStrong = true; break;
+        case MD_SPAN_EM:     ctx->spanEm = true; break;
+        case MD_SPAN_CODE:   ctx->spanCode = true; break;
+        case MD_SPAN_DEL:    ctx->spanDel = true; break;
+        case MD_SPAN_U:      ctx->spanUnderline = true; break;
+        case MD_SPAN_A:
             ctx->linkActive = true;
-            ctx->linkHref.assign(d->href.text, d->href.size);
             break;
-        }
         case MD_SPAN_IMG: {
-            auto* d = static_cast<MD_SPAN_IMG_DETAIL*>(detail);
             ctx->inImage++;
+            auto* d = static_cast<MD_SPAN_IMG_DETAIL*>(detail);
             std::string src(d->src.text, d->src.size);
+
+            // Flush any pending inline text so the image sits on its own line.
+            if (!ctx->buf.empty()) {
+                renderBuffer(*ctx, ctx->inList());
+            }
+
             ImageCacheEntry* img = loadImageCache(src, ctx->baseDir);
             if (img) {
-                // Fit to a max on-screen size while preserving aspect ratio.
                 const float maxW = 480.0f;
                 const float maxH = 360.0f;
-                float scale = 1.0f;
-                if (img->width > maxW || img->height > maxH) {
-                    scale = std::min(maxW / img->width, maxH / img->height);
-                }
-                ImVec2 size(img->width * scale, img->height * scale);
-                ImGui::Image(img->texture, size);
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("%s (%dx%d)", src.c_str(), img->width,
-                                      img->height);
-                }
+                float scale = std::min(1.0f,
+                    std::min(maxW / img->width, maxH / img->height));
+                ImGui::Image(img->texture,
+                              ImVec2(img->width * scale, img->height * scale));
             } else {
                 ImGui::TextDisabled("(image: %s)", src.c_str());
             }
@@ -282,27 +448,13 @@ int enterSpan(MD_SPANTYPE type, void* detail, void* userdata) {
 
 int leaveSpan(MD_SPANTYPE type, void* /*detail*/, void* userdata) {
     auto* ctx = static_cast<RenderContext*>(userdata);
-
     switch (type) {
-        case MD_SPAN_STRONG:
-            ctx->spanStrong = false;
-            break;
-        case MD_SPAN_EM:
-            ctx->spanEm = false;
-            break;
-        case MD_SPAN_CODE:
-            ctx->spanCode = false;
-            break;
-        case MD_SPAN_DEL:
-            ctx->spanDel = false;
-            break;
-        case MD_SPAN_U:
-            ctx->spanUnderline = false;
-            break;
-        case MD_SPAN_A:
-            ctx->linkActive = false;
-            ctx->linkHref.clear();
-            break;
+        case MD_SPAN_STRONG: ctx->spanStrong = false; break;
+        case MD_SPAN_EM:     ctx->spanEm = false; break;
+        case MD_SPAN_CODE:   ctx->spanCode = false; break;
+        case MD_SPAN_DEL:    ctx->spanDel = false; break;
+        case MD_SPAN_U:      ctx->spanUnderline = false; break;
+        case MD_SPAN_A:      ctx->linkActive = false; break;
         case MD_SPAN_IMG:
             if (ctx->inImage > 0) {
                 ctx->inImage--;
@@ -318,64 +470,57 @@ int textCallback(MD_TEXTTYPE type, const MD_CHAR* text, MD_SIZE size,
                  void* userdata) {
     auto* ctx = static_cast<RenderContext*>(userdata);
 
-    // Inside an image, the emitted text is the alt attribute; drop it.
     if (ctx->inImage > 0) {
         return 0;
     }
 
     if (type == MD_TEXT_BR) {
-        ImGui::NewLine();
+        emitMarker(*ctx);
+        ctx->buf.push_back('\n');
         return 0;
     }
     if (type == MD_TEXT_SOFTBR) {
-        // soft break -> space in rendered output inline
-        ImGui::TextUnformatted(" ");
+        emitMarker(*ctx);
+        ctx->buf.push_back(' ');
         return 0;
     }
+
+    // For tight lists (no paragraph block), emit the marker on first text.
+    emitMarker(*ctx);
 
     std::string s(text, size);
-    if (s.empty()) {
-        return 0;
+
+    // A heading opens with its color applied for the whole line.
+    bool inHeading = !ctx->stack.empty() &&
+                     ctx->stack.back().type == MD_BLOCK_H;
+
+    ColorMode mode = ctx->currentColorMode();
+
+    // Apply heading styling as a leading color mark at paragraph start.
+    if (inHeading && ctx->startOfPara) {
+        static const ColorMode headingModes[] = {
+            kStrong, kStrong, kStrong, kStrong, kStrong, kStrong,
+        };
+        unsigned lvl = ctx->stack.back().hLevel;
+        if (lvl >= 1 && lvl <= 6) {
+            mode = headingModes[lvl - 1];
+        }
     }
 
-    // Fragment styling: rebuild with decorations by wrapping the string.
-    // For simplicity we push style color modifiers around the segment.
-    bool isCode = ctx->spanCode ||
-                  std::any_of(ctx->stack.begin(), ctx->stack.end(),
-                              [](const BlockState& b) { return b.code; });
-
-    if (isCode) {
-        ImGui::TextUnformatted(s.c_str());
-        return 0;
+    // Emit a color mark if the mode changed. We use the paragraph-start flag
+    // to seed the initial mode.
+    if (ctx->buf.empty()) {
+        ctx->buf.push_back(kColorMark);
+        ctx->buf.push_back(static_cast<char>(mode));
+        ctx->startOfPara = false;
+        ctx->lastMode = mode;
+    } else if (ctx->lastMode != mode) {
+        ctx->buf.push_back(kColorMark);
+        ctx->buf.push_back(static_cast<char>(mode));
+        ctx->lastMode = mode;
     }
 
-    // Strong: brighter text; Em: italic color; Del: strikethrough color;
-    // U: underline color; Link: blue text.
-    if (ctx->linkActive) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.35f, 0.60f, 0.95f, 1.0f));
-        ImGui::TextUnformatted(s.c_str());
-        ImGui::PopStyleColor();
-    } else if (ctx->spanStrong) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.35f, 1.0f));
-        ImGui::TextUnformatted(s.c_str());
-        ImGui::PopStyleColor();
-    } else if (ctx->spanEm) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.80f, 0.55f, 1.0f));
-        ImGui::TextUnformatted(s.c_str());
-        ImGui::PopStyleColor();
-    } else if (ctx->spanDel) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.55f, 0.55f, 1.0f));
-        ImGui::TextUnformatted(s.c_str());
-        ImGui::PopStyleColor();
-    } else if (ctx->spanUnderline) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.75f, 0.75f, 0.95f, 1.0f));
-        ImGui::TextUnformatted(s.c_str());
-        ImGui::PopStyleColor();
-    } else {
-        ImGui::TextUnformatted(s.c_str());
-    }
-
-    (void)ctx;
+    ctx->buf.append(s);
     return 0;
 }
 
@@ -401,6 +546,9 @@ void MarkdownRenderer::render(const std::string& markdown,
 
     md_parse(markdown.c_str(), static_cast<MD_SIZE>(markdown.size()), &parser,
              &ctx);
+
+    // Flush any trailing content.
+    renderBuffer(ctx, ctx.inList());
 }
 
 }  // namespace ab

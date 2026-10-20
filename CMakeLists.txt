@@ -126,12 +126,24 @@ target_sources(AdventureBoard PRIVATE
   ${sqlite3_SOURCE_DIR}/sqlite3.c
 )
 
+# Fontconfig (optional, for locating system fonts at runtime)
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+  pkg_check_modules(FONTCONFIG QUIET fontconfig)
+endif()
+
 target_link_libraries(AdventureBoard PRIVATE
   glfw
   glad
   Threads::Threads
   ${CMAKE_DL_LIBS}
 )
+
+if(FONTCONFIG_FOUND)
+  target_include_directories(AdventureBoard PRIVATE ${FONTCONFIG_INCLUDE_DIRS})
+  target_link_libraries(AdventureBoard PRIVATE ${FONTCONFIG_LIBRARIES})
+  target_compile_definitions(AdventureBoard PRIVATE AB_HAVE_FONTCONFIG=1)
+endif()
 
 target_compile_definitions(AdventureBoard PRIVATE
   GLFW_INCLUDE_NONE

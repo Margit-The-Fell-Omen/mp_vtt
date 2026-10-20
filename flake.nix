@@ -27,6 +27,8 @@
             wayland
             wayland-scanner
             libxkbcommon
+            fontconfig
+            dejavu_fonts
           ];
 
           # GLFW dlopen()s these shared libraries at runtime rather than
@@ -41,6 +43,7 @@
             libxinerama
             libxrandr
             libxi
+            fontconfig
           ];
 
           shellHook = ''

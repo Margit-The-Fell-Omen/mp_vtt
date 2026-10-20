@@ -9,7 +9,7 @@ class Settings {
 public:
     std::string lastProjectPath;
     std::string lastImagesPath;
-    std::string theme = "dark";
+    std::string theme = "catppuccin-mocha";
     int windowWidth = 1280;
     int windowHeight = 720;
 

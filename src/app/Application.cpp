@@ -378,14 +378,39 @@ void Application::drawMenuBar() {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("View")) {
-            const char* themes[] = {"dark", "light", "classic"};
-            for (const char* t : themes) {
-                bool checked = (m_settings.theme == t);
-                if (ImGui::MenuItem(t, nullptr, checked)) {
-                    m_settings.theme = t;
+            if (ImGui::BeginMenu("Theme")) {
+                if (ImGui::MenuItem("Catppuccin Mocha", nullptr, m_settings.theme == "catppuccin-mocha")) {
+                    m_settings.theme = "catppuccin-mocha";
                     applySettingsTheme();
                     m_settings.save(m_database);
                 }
+                if (ImGui::MenuItem("Rose Pine", nullptr, m_settings.theme == "rose-pine")) {
+                    m_settings.theme = "rose-pine";
+                    applySettingsTheme();
+                    m_settings.save(m_database);
+                }
+                if (ImGui::MenuItem("Gruvbox", nullptr, m_settings.theme == "gruvbox")) {
+                    m_settings.theme = "gruvbox";
+                    applySettingsTheme();
+                    m_settings.save(m_database);
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem("Classic Dark", nullptr, m_settings.theme == "classic")) {
+                    m_settings.theme = "classic";
+                    applySettingsTheme();
+                    m_settings.save(m_database);
+                }
+                if (ImGui::MenuItem("Dark", nullptr, m_settings.theme == "dark")) {
+                    m_settings.theme = "dark";
+                    applySettingsTheme();
+                    m_settings.save(m_database);
+                }
+                if (ImGui::MenuItem("Light", nullptr, m_settings.theme == "light")) {
+                    m_settings.theme = "light";
+                    applySettingsTheme();
+                    m_settings.save(m_database);
+                }
+                ImGui::EndMenu();
             }
             ImGui::EndMenu();
         }
@@ -824,21 +849,42 @@ bool Application::drawFolderPicker(const char* title, std::string& out) {
 }
 
 void Application::draw() {
-    ImGui::DockSpaceOverViewport(ImGui::GetID("MainDockSpace"),
-                                 ImGui::GetMainViewport(),
-                                 ImGuiDockNodeFlags_PassthruCentralNode);
+    // Host window covering the *work* area only, so content stays clear of
+    // the OS navbar / taskbar and doesn't render underneath it.
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::SetNextWindowViewport(viewport->ID);
+
+    ImGuiWindowFlags hostFlags =
+        ImGuiWindowFlags_NoDocking |
+        ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoBringToFrontOnFocus |
+        ImGuiWindowFlags_NoNavFocus |
+        ImGuiWindowFlags_NoBackground;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::Begin("##HostWindow", nullptr, hostFlags);
+    ImGui::PopStyleVar(3);
+
+    ImGuiID dockId = ImGui::GetID("MainDockSpace");
+    ImGui::DockSpace(dockId, ImVec2(0, 0), ImGuiDockNodeFlags_PassthruCentralNode);
 
     // One-time default docking layout on first launch.
     if (m_needsDefaultLayout) {
         m_needsDefaultLayout = false;
-        ImGuiID id = ImGui::GetID("MainDockSpace");
-        ImGui::DockBuilderRemoveNode(id);
-        ImGui::DockBuilderAddNode(id, ImGuiDockNodeFlags_DockSpace);
-        ImGui::DockBuilderSetNodeSize(id, ImGui::GetMainViewport()->WorkSize);
+        ImGui::DockBuilderRemoveNode(dockId);
+        ImGui::DockBuilderAddNode(dockId, ImGuiDockNodeFlags_DockSpace);
+        ImGui::DockBuilderSetNodeSize(dockId, viewport->WorkSize);
 
         ImGuiID left;
         ImGuiID right;
-        ImGui::DockBuilderSplitNode(id, ImGuiDir_Left, 0.64f, &left, &right);
+        ImGui::DockBuilderSplitNode(dockId, ImGuiDir_Left, 0.64f, &left, &right);
 
         ImGuiID notes;
         ImGuiID initiative;
@@ -847,7 +893,7 @@ void Application::draw() {
         ImGui::DockBuilderDockWindow("Notes", notes);
         ImGui::DockBuilderDockWindow("Initiative", initiative);
         ImGui::DockBuilderDockWindow("Projection", right);
-        ImGui::DockBuilderFinish(id);
+        ImGui::DockBuilderFinish(dockId);
     }
 
     drawMenuBar();
@@ -957,6 +1003,8 @@ void Application::draw() {
             ImGui::EndPopup();
         }
     }
+
+    ImGui::End();  // ##HostWindow
 }
 
 void Application::newFrame() {
