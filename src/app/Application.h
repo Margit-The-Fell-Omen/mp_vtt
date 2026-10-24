@@ -7,6 +7,7 @@
 #include "notes/NoteManager.h"
 #include "projection/ImageStore.h"
 #include "projection/ProjectionWindow.h"
+#include "app/LayoutManager.h"
 
 #include <memory>
 #include <string>
@@ -57,6 +58,7 @@ private:
     ImageStore m_images;
     ProjectionWindow m_projection;
     InitiativeTracker m_initiative;
+    LayoutManager m_layout;
 
     // Initiative panel input state.
     char m_initiativeName[256] = {0};

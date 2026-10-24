@@ -134,6 +134,11 @@ bool Application::init() {
     m_images.rescan(m_settings.lastImagesPath);
     m_initiative.load(m_database);
 
+    // Register dock-able panels for the layout manager.
+    m_layout.registerWindow("Notes");
+    m_layout.registerWindow("Initiative");
+    m_layout.registerWindow("Projection");
+
     // Default new-note name.
     std::snprintf(m_newNoteName, sizeof(m_newNoteName), "New Note.md");
     return true;
@@ -409,6 +414,25 @@ void Application::drawMenuBar() {
                     m_settings.theme = "light";
                     applySettingsTheme();
                     m_settings.save(m_database);
+                }
+                ImGui::EndMenu();
+            }
+            ImGui::Separator();
+            if (ImGui::BeginMenu("Layout")) {
+                const ImVec2 workSize = ImGui::GetMainViewport()->WorkSize;
+                if (ImGui::MenuItem("Reset layout", "r")) {
+                    m_layout.applyDefaultLayout(ImGui::GetID("MainDockSpace"),
+                                                workSize);
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem("Notes", nullptr, m_layout.isWindowOpen("Notes"))) {
+                    m_layout.setWindowOpen("Notes", !m_layout.isWindowOpen("Notes"));
+                }
+                if (ImGui::MenuItem("Initiative", nullptr, m_layout.isWindowOpen("Initiative"))) {
+                    m_layout.setWindowOpen("Initiative", !m_layout.isWindowOpen("Initiative"));
+                }
+                if (ImGui::MenuItem("Projection", nullptr, m_layout.isWindowOpen("Projection"))) {
+                    m_layout.setWindowOpen("Projection", !m_layout.isWindowOpen("Projection"));
                 }
                 ImGui::EndMenu();
             }
@@ -878,28 +902,25 @@ void Application::draw() {
     // One-time default docking layout on first launch.
     if (m_needsDefaultLayout) {
         m_needsDefaultLayout = false;
-        ImGui::DockBuilderRemoveNode(dockId);
-        ImGui::DockBuilderAddNode(dockId, ImGuiDockNodeFlags_DockSpace);
-        ImGui::DockBuilderSetNodeSize(dockId, viewport->WorkSize);
-
-        ImGuiID left;
-        ImGuiID right;
-        ImGui::DockBuilderSplitNode(dockId, ImGuiDir_Left, 0.64f, &left, &right);
-
-        ImGuiID notes;
-        ImGuiID initiative;
-        ImGui::DockBuilderSplitNode(left, ImGuiDir_Up, 0.55f, &notes, &initiative);
-
-        ImGui::DockBuilderDockWindow("Notes", notes);
-        ImGui::DockBuilderDockWindow("Initiative", initiative);
-        ImGui::DockBuilderDockWindow("Projection", right);
-        ImGui::DockBuilderFinish(dockId);
+        m_layout.applyDefaultLayout(dockId, viewport->WorkSize);
     }
 
+    // Execute keyboard-queued layout commands before the panels are drawn.
+    m_layout.applyPending(dockId, viewport->WorkSize);
+
+    // Guarantee no layout exceeds the app screen.
+    m_layout.enforceBounds(dockId, viewport->WorkPos, viewport->WorkSize);
+
     drawMenuBar();
-    drawNotesPanel();
-    drawProjectionPanel();
-    drawInitiativePanel();
+    if (m_layout.isWindowOpen("Notes")) {
+        drawNotesPanel();
+    }
+    if (m_layout.isWindowOpen("Projection")) {
+        drawProjectionPanel();
+    }
+    if (m_layout.isWindowOpen("Initiative")) {
+        drawInitiativePanel();
+    }
 
     // Folder picker modal.
     std::string picked;
@@ -1003,6 +1024,11 @@ void Application::draw() {
             ImGui::EndPopup();
         }
     }
+
+    // Keyboard layout commands + keymap overlay.
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    m_layout.handleKeys(dockId, vp->WorkSize);
+    m_layout.renderOverlay();
 
     ImGui::End();  // ##HostWindow
 }
