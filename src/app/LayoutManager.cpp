@@ -413,10 +413,10 @@ void LayoutManager::handleKeys(ImGuiID dockId, const ImVec2& hostSize) {
     // do not touch the layout keys.
     const bool popupOpen = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup);
 
-    // 1 / 2 / 3 select a top-level panel. These always work (even while a
-    // text field is focused) so they are the reliable way to leave the
-    // editor and grab a panel.
-    if (!popupOpen) {
+    // 1 / 2 / 3 select a top-level panel. They fire whenever the user is not
+    // typing in a text field and no popup is open — so typing "1" in a note
+    // or HP field never switches panels.
+    if (!popupOpen && !io.WantTextInput) {
         if (ImGui::IsKeyPressed(ImGuiKey_1, false)) {
             focusPanelIndex(0);
             return;

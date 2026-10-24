@@ -656,7 +656,7 @@ void Application::drawInitiativePanel() {
     ImGui::InputText("Name", m_initiativeName, sizeof(m_initiativeName));
     ImGui::SameLine();
     static int newInit = 0;
-    ImGui::SetNextItemWidth(60);
+    ImGui::SetNextItemWidth(90);
     ImGui::InputInt("Init", &newInit);
     ImGui::SameLine();
     if (ImGui::Button("Add")) {
@@ -675,7 +675,7 @@ void Application::drawInitiativePanel() {
     }
     ImGui::SameLine();
     int round = m_initiative.round();
-    ImGui::SetNextItemWidth(50);
+    ImGui::SetNextItemWidth(80);
     if (ImGui::InputInt("Round", &round)) {
         m_initiative.setRound(round);
         m_initiativeDirty = true;
@@ -723,7 +723,7 @@ void Application::drawInitiativePanel() {
     if (ImGui::BeginTable("init_table", 6, flags)) {
         ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 28);
         ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 3.0f);
-        ImGui::TableSetupColumn("Init", ImGuiTableColumnFlags_WidthFixed, 70);
+        ImGui::TableSetupColumn("Init", ImGuiTableColumnFlags_WidthFixed, 90);
         ImGui::TableSetupColumn("HP", ImGuiTableColumnFlags_WidthFixed, 200);
         ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch, 2.0f);
         ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 30);
