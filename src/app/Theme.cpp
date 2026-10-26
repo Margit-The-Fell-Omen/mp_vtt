@@ -250,9 +250,12 @@ static const ImWchar* bulletGlyphRanges() {
 
 #ifdef AB_HAVE_FONTCONFIG
 // Resolves the on-disk path of a preferred font via fontconfig.
-static std::string findFontPath(const char* family) {
+static std::string findFontPath(const char* family, const char* style = nullptr) {
     FcPattern* pat = FcPatternCreate();
     FcPatternAddString(pat, FC_FAMILY, reinterpret_cast<const FcChar8*>(family));
+    if (style && *style) {
+        FcPatternAddString(pat, FC_STYLE, reinterpret_cast<const FcChar8*>(style));
+    }
     FcPatternAddBool(pat, FC_SCALABLE, FcTrue);
     FcConfigSubstitute(nullptr, pat, FcMatchPattern);
     FcDefaultSubstitute(pat);
@@ -272,46 +275,118 @@ static std::string findFontPath(const char* family) {
 }
 #endif
 
+namespace {
+
+FontSet g_fonts;
+
+}  // namespace
+
+const FontSet& fonts() {
+    return g_fonts;
+}
+
+// Resolves a bold variant of a given font path (same directory), else empty.
+static std::string boldPathFor(const std::string& regularPath) {
+    if (regularPath.empty()) {
+        return "";
+    }
+    // Common naming conventions next to a regular font.
+    const char* names[] = {
+        "Bold", "b", "B", nullptr,
+    };
+    fs::path p(regularPath);
+    std::string stem = p.stem().string();       // e.g. DejaVuSans
+    std::string parent = p.parent_path().string();
+    std::string ext = p.extension().string();
+    for (const char* suffix : names) {
+        if (!suffix) {
+            continue;
+        }
+        fs::path cand = fs::path(parent) / (stem + "-" + suffix + ext);
+        if (fs::exists(cand)) {
+            return cand.string();
+        }
+        // DejaVu uses "Bold" suffix: DejaVuSans-Bold.ttf
+        cand = fs::path(parent) / (stem + suffix + ext);
+        if (fs::exists(cand)) {
+            return cand.string();
+        }
+    }
+    return "";
+}
+
+static ImFont* addFont(ImGuiIO& io, const std::string& path, float size) {
+    if (path.empty()) {
+        return nullptr;
+    }
+    return io.Fonts->AddFontFromFileTTF(path.c_str(), size, nullptr,
+                                        bulletGlyphRanges());
+}
+
 void loadFonts(ImGuiIO& io) {
     const char* override = std::getenv("AB_FONT");
     if (override && *override) {
-        io.Fonts->AddFontFromFileTTF(override, 18.0f, nullptr,
-                                     bulletGlyphRanges());
+        ImFont* f = addFont(io, override, 18.0f);
+        g_fonts.regular = f;
+        g_fonts.bold = f;
+        g_fonts.h1 = f;
         return;
     }
 
+    // 1. Preferred family via fontconfig.
+    std::string regularPath;
+    std::string boldPath;
 #ifdef AB_HAVE_FONTCONFIG
     const char* families[] = {"DejaVu Sans", "Liberation Sans",
                               "Noto Sans", "Cantarell"};
     for (const char* family : families) {
-        std::string path = findFontPath(family);
-        if (!path.empty()) {
-            if (auto* f = io.Fonts->AddFontFromFileTTF(path.c_str(), 18.0f, nullptr,
-                                                       bulletGlyphRanges())) {
-                return;
+        regularPath = findFontPath(family);
+        if (!regularPath.empty()) {
+            boldPath = findFontPath(family, "Bold");
+            if (boldPath.empty()) {
+                boldPath = boldPathFor(regularPath);
             }
+            break;
         }
     }
 #endif
 
-    // Hardcoded fallbacks (non-Nix systems).
-    static const char* kCandidates[] = {
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    };
-    for (const char* path : kCandidates) {
-        if (fs::exists(path)) {
-            if (io.Fonts->AddFontFromFileTTF(path, 18.0f, nullptr,
-                                             bulletGlyphRanges())) {
-                return;
+    // 2. Hardcoded fallbacks (non-Nix systems).
+    if (regularPath.empty()) {
+        static const char* kCandidates[] = {
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        };
+        for (const char* path : kCandidates) {
+            if (fs::exists(path)) {
+                regularPath = path;
+                boldPath = boldPathFor(path);
+                break;
             }
         }
     }
 
+    if (!regularPath.empty()) {
+        g_fonts.regular = addFont(io, regularPath, 18.0f);
+        g_fonts.bold = addFont(io, boldPath, 18.0f);
+        if (!g_fonts.bold) {
+            g_fonts.bold = g_fonts.regular;
+        }
+        g_fonts.h1 = addFont(io, boldPath, 22.0f);
+        if (!g_fonts.h1) {
+            g_fonts.h1 = g_fonts.bold;
+        }
+        return;
+    }
+
+    // 3. Embedded font fallback (scaled up).
     io.Fonts->AddFontDefault();
     io.FontGlobalScale = 1.4f;
+    g_fonts.regular = ImGui::GetFont();
+    g_fonts.bold = ImGui::GetFont();
+    g_fonts.h1 = ImGui::GetFont();
 }
 
 }  // namespace ab

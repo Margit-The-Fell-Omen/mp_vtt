@@ -96,8 +96,20 @@ add_executable(AdventureBoard
   src/projection/ProjectionWindow.cpp
 )
 
+# imgui_md is a vendored third-party library; build it without our
+# -Wall -Wextra flags so upstream warnings stay out of the output.
+add_library(imgui_md STATIC
+  third_party/imgui_md/imgui_md.cpp
+)
+target_include_directories(imgui_md PUBLIC
+  third_party/imgui_md
+  ${imgui_SOURCE_DIR}
+  ${md4c_SOURCE_DIR}/src
+)
+
 target_include_directories(AdventureBoard PRIVATE
   src
+  third_party/imgui_md
   ${imgui_SOURCE_DIR}
   ${imgui_SOURCE_DIR}/backends
   ${md4c_SOURCE_DIR}/src
@@ -136,6 +148,7 @@ endif()
 target_link_libraries(AdventureBoard PRIVATE
   glfw
   glad
+  imgui_md
   Threads::Threads
   ${CMAKE_DL_LIBS}
 )
