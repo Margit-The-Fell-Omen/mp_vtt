@@ -153,6 +153,25 @@ target_link_libraries(AdventureBoard PRIVATE
   ${CMAKE_DL_LIBS}
 )
 
+# X11 / Xinerama (projection fullscreen targeting on X11/XWayland).
+# Under XWayland, GLFW's monitor->Xinerama index mapping can be wrong when the
+# compositor scales outputs, so the projection window re-sends
+# _NET_WM_FULLSCREEN_MONITORS with the correct index itself.
+if(UNIX AND NOT APPLE)
+  find_package(X11)
+  if(X11_FOUND)
+    target_include_directories(AdventureBoard PRIVATE ${X11_INCLUDE_DIR})
+    target_link_libraries(AdventureBoard PRIVATE ${X11_LIBRARIES})
+    target_compile_definitions(AdventureBoard PRIVATE AB_HAVE_X11=1)
+    if(X11_Xinerama_FOUND)
+      target_include_directories(AdventureBoard PRIVATE
+        ${X11_Xinerama_INCLUDE_PATH})
+      target_link_libraries(AdventureBoard PRIVATE ${X11_Xinerama_LIB})
+      target_compile_definitions(AdventureBoard PRIVATE AB_HAVE_XINERAMA=1)
+    endif()
+  endif()
+endif()
+
 if(FONTCONFIG_FOUND)
   target_include_directories(AdventureBoard PRIVATE ${FONTCONFIG_INCLUDE_DIRS})
   target_link_libraries(AdventureBoard PRIVATE ${FONTCONFIG_LIBRARIES})

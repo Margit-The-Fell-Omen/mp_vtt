@@ -83,6 +83,38 @@ static std::string defaultIniPath() {
     return configDir() + "/imgui.ini";
 }
 
+// Index of the monitor containing the center of `window`, or -1.
+static int windowMonitorIndex(GLFWwindow* window) {
+    if (!window) {
+        return -1;
+    }
+    int wx = 0;
+    int wy = 0;
+    int ww = 0;
+    int wh = 0;
+    glfwGetWindowPos(window, &wx, &wy);
+    glfwGetWindowSize(window, &ww, &wh);
+    const int cx = wx + ww / 2;
+    const int cy = wy + wh / 2;
+
+    int count = 0;
+    GLFWmonitor** monitors = glfwGetMonitors(&count);
+    for (int i = 0; i < count; ++i) {
+        int mx = 0;
+        int my = 0;
+        glfwGetMonitorPos(monitors[i], &mx, &my);
+        const GLFWvidmode* mode = glfwGetVideoMode(monitors[i]);
+        if (!mode) {
+            continue;
+        }
+        if (cx >= mx && cx < mx + mode->width && cy >= my &&
+            cy < my + mode->height) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 Application::Application() = default;
 
 Application::~Application() = default;
@@ -173,6 +205,18 @@ bool Application::init() {
     m_layout.registerWindow("Initiative");
     m_layout.registerWindow("Projection");
 
+    // Default projection target: a monitor other than the one hosting the app
+    // (avoid covering the window the user is working in).
+    {
+        int count = 0;
+        glfwGetMonitors(&count);
+        if (count > 1) {
+            const int mainMon =
+                windowMonitorIndex(static_cast<GLFWwindow*>(m_window));
+            m_projectionMonitor = mainMon >= 0 ? (mainMon + 1) % count : 1;
+        }
+    }
+
     // Default new-note name.
     std::snprintf(m_newNoteName, sizeof(m_newNoteName), "New Note.md");
     return true;
@@ -198,6 +242,10 @@ void Application::saveWindowState() {
 void Application::shutdown() {
     saveWindowState();
 
+    // Make sure GL resources are torn down in the main context.
+    if (m_window) {
+        glfwMakeContextCurrent(static_cast<GLFWwindow*>(m_window));
+    }
     m_projection.close();
 
     ImGui_ImplOpenGL3_Shutdown();
@@ -895,7 +943,14 @@ void Application::drawProjectionPanel() {
     ImGui::Text("Monitor:");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(200);
-    if (ImGui::BeginCombo("##monitor", std::to_string(m_projectionMonitor).c_str())) {
+    std::string monitorLabel = std::to_string(m_projectionMonitor);
+    if (m_projectionMonitor >= 0 && m_projectionMonitor < monitorCount) {
+        if (const char* n = glfwGetMonitorName(monitors[m_projectionMonitor])) {
+            monitorLabel += " - ";
+            monitorLabel += n;
+        }
+    }
+    if (ImGui::BeginCombo("##monitor", monitorLabel.c_str())) {
         for (int i = 0; i < monitorCount; ++i) {
             std::string name = std::to_string(i);
             if (glfwGetMonitorName(monitors[i])) {
@@ -918,12 +973,58 @@ void Application::drawProjectionPanel() {
         if (ImGui::Button("Open projection")) {
             m_projection.open(m_projectionMonitor);
         }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "Fullscreen on the selected monitor. Press Esc there to close.");
+        }
     }
 
     ImGui::SameLine();
     bool blackout = m_projection.blackout();
     if (ImGui::Checkbox("Blackout", &blackout)) {
         m_projection.setBlackout(blackout);
+    }
+
+    // Presentation controls apply only to the currently projected image.
+    if (m_projection.hasImage()) {
+        ImGui::SameLine();
+        if (ImGui::Button("Rotate L")) {
+            m_projection.rotateImage(-1);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Rotate R")) {
+            m_projection.rotateImage(+1);
+        }
+        ImGui::SameLine();
+        const bool mirrorH = m_projection.mirroredH();
+        if (mirrorH) {
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                                  ImGui::GetStyle().Colors[ImGuiCol_ButtonActive]);
+        }
+        if (ImGui::Button("Mirror H")) {
+            m_projection.toggleMirrorH();
+        }
+        if (mirrorH) {
+            ImGui::PopStyleColor();
+        }
+        ImGui::SameLine();
+        const bool mirrorV = m_projection.mirroredV();
+        if (mirrorV) {
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                                  ImGui::GetStyle().Colors[ImGuiCol_ButtonActive]);
+        }
+        if (ImGui::Button("Mirror V")) {
+            m_projection.toggleMirrorV();
+        }
+        if (mirrorV) {
+            ImGui::PopStyleColor();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reset")) {
+            m_projection.resetImageTransform();
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("%d°", m_projection.imageRotation() * 90);
     }
 
     ImGui::Separator();
@@ -1389,6 +1490,16 @@ void Application::draw() {
     m_layout.renderOverlay();
     handleThemeKeys();
 
+    // Esc also closes the projection from the main window (e.g. when it is on
+    // another monitor). Guarded so it doesn't fight menus or text fields.
+    if (m_projection.isOpen() &&
+        !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup) &&
+        !ImGui::GetIO().WantTextInput &&
+        ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        m_projection.close();
+        glfwFocusWindow(static_cast<GLFWwindow*>(m_window));
+    }
+
     ImGui::End();  // ##HostWindow
 }
 
@@ -1398,6 +1509,12 @@ void Application::newFrame() {
     // Projection window (when open) leaves its own context current on the
     // previous frame; restore the main window's context for ImGui.
     glfwMakeContextCurrent(static_cast<GLFWwindow*>(m_window));
+
+    // Esc / window-close on the projection is handled there via a callback.
+    if (m_projection.isOpen() && m_projection.closeRequested()) {
+        m_projection.close();
+        glfwFocusWindow(static_cast<GLFWwindow*>(m_window));
+    }
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
