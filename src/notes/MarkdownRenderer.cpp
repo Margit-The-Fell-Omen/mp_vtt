@@ -103,7 +103,15 @@ protected:
         const FontSet& f = m_cachedFonts;
         ImFont* reg = f.regular ? f.regular : ImGui::GetFont();
         ImFont* bold = f.bold ? f.bold : reg;
+        ImFont* italic = f.italic ? f.italic : reg;
+        ImFont* boldItalic = f.boldItalic ? f.boldItalic : bold;
+        if (boldItalic == italic) {
+            boldItalic = bold;  // a real BI font is required for ***style***
+        }
         ImFont* h1 = f.h1 ? f.h1 : bold;
+        if (m_is_em) {
+            return m_is_strong ? boldItalic : italic;
+        }
         if (m_hlevel >= 1) {
             return h1;
         }
@@ -155,8 +163,7 @@ protected:
     void BLOCK_CODE(const MD_BLOCK_CODE_DETAIL*, bool e) override {
         if (e) {
             m_is_code = true;
-            ImGui::PushStyleColor(ImGuiCol_Text,
-                                  ImVec4(0.80f, 0.86f, 0.92f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, ab::accentColor());
             ImGui::NewLine();
         } else {
             ImGui::PopStyleColor();

@@ -26,6 +26,39 @@ static void glfwErrorCallback(int error, const char* description) {
     std::fprintf(stderr, "GLFW error %d: %s\n", error, description);
 }
 
+// After a button is pressed or a field is entered, keep it as the keyboard
+// navigation focus so pressing Tab continues from that widget.
+static void RetainLastWidgetFocus() {
+    if (!ImGui::IsItemActivated()) {
+        return;
+    }
+    ImGuiContext& g = *ImGui::GetCurrentContext();
+    ImGui::SetNavID(g.LastItemData.ID, g.NavWindow == g.CurrentWindow
+                                           ? g.NavLayer
+                                           : ImGuiNavLayer_Main,
+                    g.LastItemData.ID, ImRect());
+    g.NavWindow = g.CurrentWindow;
+    g.NavFocusScopeId = g.LastItemData.ID;
+}
+
+// Number of consecutive `c` characters at the start of [from, end).
+static int runLen(const std::string& s, int from, int end, char c) {
+    int r = 0;
+    for (int i = from; i < end && s[i] == c; ++i) {
+        ++r;
+    }
+    return r;
+}
+
+// Number of consecutive `c` characters just before `end` (scanning left).
+static int runLenBefore(const std::string& s, int end, char c) {
+    int r = 0;
+    for (int i = end - 1; i >= 0 && s[i] == c; --i) {
+        ++r;
+    }
+    return r;
+}
+
 static std::string homeDir() {
     const char* home = std::getenv("HOME");
     if (home && *home) {
@@ -66,6 +99,7 @@ bool Application::init() {
     m_settings.load(m_database);
 
     m_project.setRootPath(m_settings.lastProjectPath);
+    m_reopenRoot = m_settings.lastProjectPath;
 
     glfwSetErrorCallback(glfwErrorCallback);
 
@@ -182,8 +216,19 @@ void Application::openNotesFolder(const fs::path& path) {
     }
     m_project.setRootPath(path.string());
     m_notes.rescan(path);
+    m_reopenRoot = path.string();
     m_selectedPath.clear();
     m_editorBuffer.clear();
+    m_editorDirty = false;
+}
+
+void Application::closeNotesFolder() {
+    m_reopenRoot = m_project.rootPath();
+    m_project.setRootPath("");
+    m_notes.rescan("");
+    m_selectedPath.clear();
+    m_editorBuffer.clear();
+    m_editorDirty = false;
 }
 
 void Application::openImagesFolder(const fs::path& path) {
@@ -272,6 +317,215 @@ void Application::applySettingsTheme() {
     applyTheme(m_settings.theme);
 }
 
+void Application::setTheme(const char* id) {
+    m_settings.theme = id;
+    applySettingsTheme();
+    m_settings.save(m_database);
+}
+
+void Application::cycleTheme(int delta) {
+    const auto& themes = ab::availableThemes();
+    const int n = static_cast<int>(themes.size());
+    if (n == 0) {
+        return;
+    }
+    int idx = 0;
+    for (int i = 0; i < n; ++i) {
+        if (m_settings.theme == themes[i].id) {
+            idx = i;
+            break;
+        }
+    }
+    idx = (idx + delta + n) % n;
+    setTheme(themes[idx].id);
+}
+
+void Application::handleThemeKeys() {
+    ImGuiIO& io = ImGui::GetIO();
+    if (ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup) ||
+        io.WantTextInput) {
+        return;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_RightBracket, false)) {
+        cycleTheme(+1);
+    } else if (ImGui::IsKeyPressed(ImGuiKey_LeftBracket, false)) {
+        cycleTheme(-1);
+    }
+}
+
+void Application::drawThemePicker() {
+    if (!m_themePickerOpen) {
+        return;
+    }
+    ImGui::OpenPopup("Theme");
+    if (ImGui::BeginPopupModal("Theme", &m_themePickerOpen,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        bool groupLight = false;
+        for (const auto& t : ab::availableThemes()) {
+            if (t.isLight != groupLight) {
+                groupLight = t.isLight;
+                ImGui::SeparatorText(groupLight ? "Light" : "Dark");
+            }
+            if (ImGui::Selectable(t.label, m_settings.theme == t.id)) {
+                setTheme(t.id);
+                m_themePickerOpen = false;
+            }
+        }
+        ImGui::EndPopup();
+    }
+}
+
+void Application::wrapEditorSelection(const char* before, const char* after) {
+    int s = std::min(m_editorSelStart, m_editorSelEnd);
+    int e = std::max(m_editorSelStart, m_editorSelEnd);
+    const int n = static_cast<int>(m_editorBuffer.size());
+    s = std::clamp(s, 0, n);
+    e = std::clamp(e, 0, n);
+
+    // No selection: wrap the word under the cursor instead.
+    if (s == e) {
+        auto isWord = [](char c) {
+            return !(c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
+                     c == '*' || c == '_' || c == '~' || c == '`' ||
+                     c == '#' || c == '|' || c == '[' || c == ']' ||
+                     c == '<' || c == '>' || c == '(' || c == ')' ||
+                     c == '.' || c == ',' || c == ';' || c == ':' ||
+                     c == '!' || c == '?' || c == '"' || c == '\'');
+        };
+        int wl = e;
+        int wr = e;
+        while (wl > 0 && isWord(m_editorBuffer[wl - 1])) {
+            --wl;
+        }
+        while (wr < n && isWord(m_editorBuffer[wr])) {
+            ++wr;
+        }
+        if (wl == wr) {
+            return;  // cursor not inside a word
+        }
+        s = wl;
+        e = wr;
+    }
+
+    const int bl = static_cast<int>(std::strlen(before));
+    const int al = static_cast<int>(std::strlen(after));
+    std::string sel = m_editorBuffer.substr(s, e - s);
+    bool multiline = sel.find('\n') != std::string::npos;
+
+    auto isWrappedLine = [&](const std::string& line) {
+        return line.size() >= static_cast<size_t>(bl + al) &&
+               line.compare(0, bl, before) == 0 &&
+               line.compare(line.size() - al, al, after) == 0;
+    };
+    auto innerOf = [&](const std::string& line) {
+        return line.substr(bl, line.size() - bl - al);
+    };
+
+    // Decide whether this invocation should *unwrap* (markers already
+    // present) instead of adding more.
+    bool unwrap = false;
+    bool caseA = false;
+    bool caseB = false;
+    if (multiline) {
+        // Unwrap only if every non-empty line is already wrapped.
+        bool anyContent = false;
+        bool allWrapped = true;
+        size_t pos = 0;
+        while (pos <= sel.size()) {
+            size_t nl = sel.find('\n', pos);
+            std::string line =
+                sel.substr(pos, (nl == std::string::npos ? sel.size() : nl) - pos);
+            if (!line.empty()) {
+                anyContent = true;
+                if (!isWrappedLine(line)) {
+                    allWrapped = false;
+                    break;
+                }
+            }
+            if (nl == std::string::npos) {
+                break;
+            }
+            pos = nl + 1;
+        }
+        unwrap = anyContent && allWrapped;
+    } else {
+        // Case A: selection includes the markers (e.g. selected **text**).
+        // But only when the marker runs are exactly `before`/`after` long,
+        // otherwise "**word**" selected would be treated as single "*"
+        // markers for the italic button.
+        caseA =
+            sel.size() >= static_cast<size_t>(bl + al) &&
+            sel.compare(0, bl, before) == 0 &&
+            sel.compare(sel.size() - al, al, after) == 0 &&
+            runLen(sel, 0, bl, before[0]) == bl &&
+            runLenBefore(sel, static_cast<int>(sel.size()), after[0]) == al;
+        // Case B: markers flank the selection (e.g. word **selected**, no **).
+        caseB =
+            s >= bl && e + al <= n &&
+            m_editorBuffer.compare(s - bl, bl, before) == 0 &&
+            m_editorBuffer.compare(e, al, after) == 0 &&
+            runLenBefore(m_editorBuffer, s, before[0]) == bl &&
+            runLen(m_editorBuffer, e, e + al, after[0]) == al;
+        unwrap = caseA || caseB;
+    }
+
+    // Build the replacement text and the new selection range.
+    int st = s;                      // start of the region to replace
+    int ln = e - s;                  // length of that region
+    std::string rep;
+    int selS = s;
+    int selE = s;
+
+    if (multiline) {
+        size_t pos = 0;
+        while (pos <= sel.size()) {
+            size_t nl = sel.find('\n', pos);
+            std::string line =
+                sel.substr(pos, (nl == std::string::npos ? sel.size() : nl) - pos);
+            if (line.empty()) {
+                rep += line;
+            } else if (unwrap && isWrappedLine(line)) {
+                rep += innerOf(line);
+            } else if (unwrap) {
+                rep += line;
+            } else {
+                rep += std::string(before) + line + std::string(after);
+            }
+            if (nl == std::string::npos) {
+                break;
+            }
+            rep += '\n';
+            pos = nl + 1;
+        }
+        selS = s;
+        selE = s + static_cast<int>(rep.size());
+    } else if (unwrap) {
+        if (caseA) {
+            // Case A: strip markers that are inside the selection.
+            rep = innerOf(sel);
+            selS = s + bl;
+            selE = selS + static_cast<int>(rep.size());
+        } else {
+            // Case B: remove the flanking markers around the selection.
+            st = s - bl;
+            ln = (e + al) - (s - bl);
+            rep = sel;
+            selS = st;
+            selE = selS + static_cast<int>(rep.size());
+        }
+    } else {
+        rep = std::string(before) + sel + std::string(after);
+        selS = s + bl;
+        selE = selS + static_cast<int>(sel.size());
+    }
+
+    m_editorBuffer.replace(st, ln, rep);
+    m_editorDirty = true;
+    m_wrapSelStart = selS;
+    m_wrapSelEnd = selE;
+    m_wrapPending = true;
+}
+
 void Application::saveSettingsNow() {
     GLFWwindow* window = static_cast<GLFWwindow*>(m_window);
     int w = 0;
@@ -292,7 +546,7 @@ void Application::createNewNote() {
         m_newNoteOpen = false;
         m_pickerTitle = "Choose notes folder";
         m_pickerTarget = 0;
-        m_pickerCurrent = homeDir();
+        m_pickerCurrent = m_reopenRoot.empty() ? homeDir() : m_reopenRoot;
         m_pickerOpen = true;
         return;
     }
@@ -372,7 +626,8 @@ void Application::drawMenuBar() {
                 m_pickerTitle = "Choose notes folder";
                 m_pickerTarget = 0;
                 m_pickerCurrent = m_project.rootPath().empty()
-                                      ? homeDir()
+                                      ? (m_reopenRoot.empty() ? homeDir()
+                                                              : m_reopenRoot)
                                       : m_project.rootPath();
                 m_pickerOpen = true;
             }
@@ -383,39 +638,8 @@ void Application::drawMenuBar() {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("View")) {
-            if (ImGui::BeginMenu("Theme")) {
-                if (ImGui::MenuItem("Catppuccin Mocha", nullptr, m_settings.theme == "catppuccin-mocha")) {
-                    m_settings.theme = "catppuccin-mocha";
-                    applySettingsTheme();
-                    m_settings.save(m_database);
-                }
-                if (ImGui::MenuItem("Rose Pine", nullptr, m_settings.theme == "rose-pine")) {
-                    m_settings.theme = "rose-pine";
-                    applySettingsTheme();
-                    m_settings.save(m_database);
-                }
-                if (ImGui::MenuItem("Gruvbox", nullptr, m_settings.theme == "gruvbox")) {
-                    m_settings.theme = "gruvbox";
-                    applySettingsTheme();
-                    m_settings.save(m_database);
-                }
-                ImGui::Separator();
-                if (ImGui::MenuItem("Classic Dark", nullptr, m_settings.theme == "classic")) {
-                    m_settings.theme = "classic";
-                    applySettingsTheme();
-                    m_settings.save(m_database);
-                }
-                if (ImGui::MenuItem("Dark", nullptr, m_settings.theme == "dark")) {
-                    m_settings.theme = "dark";
-                    applySettingsTheme();
-                    m_settings.save(m_database);
-                }
-                if (ImGui::MenuItem("Light", nullptr, m_settings.theme == "light")) {
-                    m_settings.theme = "light";
-                    applySettingsTheme();
-                    m_settings.save(m_database);
-                }
-                ImGui::EndMenu();
+            if (ImGui::MenuItem("Theme...")) {
+                m_themePickerOpen = true;
             }
             ImGui::Separator();
             if (ImGui::BeginMenu("Layout")) {
@@ -452,9 +676,16 @@ void Application::drawNotesPanel() {
     if (ImGui::Button("Open folder...")) {
         m_pickerTitle = "Choose notes folder";
         m_pickerTarget = 0;
-        m_pickerCurrent = m_project.rootPath().empty() ? homeDir()
-                                                       : m_project.rootPath();
+        m_pickerCurrent = m_project.rootPath().empty()
+                              ? (m_reopenRoot.empty() ? homeDir() : m_reopenRoot)
+                              : m_project.rootPath();
         m_pickerOpen = true;
+    }
+    if (m_notes.hasRoot()) {
+        ImGui::SameLine();
+        if (ImGui::Button("Close folder")) {
+            closeNotesFolder();
+        }
     }
     ImGui::SameLine();
     if (ImGui::Button("New note")) {
@@ -475,7 +706,65 @@ void Application::drawNotesPanel() {
     }
     if (m_editorDirty) {
         ImGui::SameLine();
-        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "*");
+        ImGui::TextColored(ab::warningColor(), "*");
+    }
+
+    // Markdown formatting for the selected text / word under the cursor.
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+    if (ImGui::Button("B")) {
+        wrapEditorSelection("**", "**");
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Bold (**text**)");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("I")) {
+        wrapEditorSelection("*", "*");
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Italic (*text*)");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("U")) {
+        wrapEditorSelection("__", "__");
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Underline (__text__)");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("S")) {
+        wrapEditorSelection("~~", "~~");
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Strikethrough (~~text~~)");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("<>")) {
+        wrapEditorSelection("`", "`");
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Inline code (`text`)");
+    }
+
+    // Type / Render view toggles (close and reopen the sub-panels).
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Type", &m_notesEditorOpen)) {
+        if (!m_notesEditorOpen) {
+            ImGui::ClearActiveID();  // drop focus from the (now hidden) editor
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Show/hide the text editor");
+    }
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Render", &m_notesPreviewOpen)) {
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Show/hide the rendered markdown view");
     }
 
     ImGui::Separator();
@@ -505,28 +794,76 @@ void Application::drawNotesPanel() {
     }
 
     float availH = ImGui::GetContentRegionAvail().y;
-    float editorH = availH * 0.5f;
-    float previewH = availH - editorH;
-
-    ImGui::BeginChild("editor", ImVec2(0, editorH), ImGuiChildFlags_Borders);
-    size_t cap = m_editorBuffer.size() + 1024;
-    if (cap < 4096) {
-        cap = 4096;
+    float editorH = 0.0f;
+    float previewH = 0.0f;
+    if (m_notesEditorOpen && m_notesPreviewOpen) {
+        editorH = availH * 0.5f;
+        previewH = availH - editorH;
+    } else if (m_notesEditorOpen) {
+        editorH = availH;
+    } else if (m_notesPreviewOpen) {
+        previewH = availH;
     }
-    m_editorBuffer.resize(cap);
-    if (ImGui::InputTextMultiline("##src", m_editorBuffer.data(),
-                                  m_editorBuffer.size(),
-                                  ImVec2(-1, -1),
-                                  ImGuiInputTextFlags_AllowTabInput)) {
-        m_editorDirty = true;
-    }
-    m_editorBuffer.resize(std::strlen(m_editorBuffer.c_str()));
-    ImGui::EndChild();
 
-    ImGui::BeginChild("preview", ImVec2(0, previewH), ImGuiChildFlags_Borders);
-    MarkdownRenderer::render(m_editorBuffer,
-                             m_notes.absolute(m_selectedPath).parent_path());
-    ImGui::EndChild();
+    if (m_notesEditorOpen) {
+        ImGui::BeginChild("editor", ImVec2(0, editorH), ImGuiChildFlags_Borders);
+        const ImGuiID srcId = ImGui::GetID("##src");
+
+        // Apply a pending formatting wrap: re-sync ImGui's internal buffer with
+        // the edited text and hand focus back to the editor.
+        if (m_wrapPending) {
+            if (ImGuiInputTextState* st = ImGui::GetInputTextState(srcId)) {
+                st->ReloadUserBufAndKeepSelection();
+            }
+            ImGui::SetKeyboardFocusHere(0);
+        }
+
+        size_t cap = m_editorBuffer.size() + 1024;
+        if (cap < 4096) {
+            cap = 4096;
+        }
+        m_editorBuffer.resize(cap);
+        if (ImGui::InputTextMultiline("##src", m_editorBuffer.data(),
+                                      m_editorBuffer.size(),
+                                      ImVec2(-1, -1),
+                                      ImGuiInputTextFlags_AllowTabInput)) {
+            m_editorDirty = true;
+        }
+        m_editorBuffer.resize(std::strlen(m_editorBuffer.c_str()));
+
+        // Track selection/cursor for the next formatting operation, and restore
+        // the pending selection after a wrap.
+        if (ImGuiInputTextState* st = ImGui::GetInputTextState(srcId)) {
+            m_editorSelStart = st->GetSelectionStart();
+            m_editorSelEnd = st->GetSelectionEnd();
+            if (m_wrapPending) {
+                st->SetSelection(m_wrapSelStart, m_wrapSelEnd);
+                // Keep the cached range in sync with what was applied, otherwise
+                // the next formatting button acts on stale (pre-wrap) offsets.
+                m_editorSelStart = m_wrapSelStart;
+                m_editorSelEnd = m_wrapSelEnd;
+                m_wrapPending = false;
+            }
+        } else {
+            m_editorSelStart = (m_wrapPending) ? m_wrapSelStart : -1;
+            m_editorSelEnd = (m_wrapPending) ? m_wrapSelEnd : -1;
+            if (m_wrapPending) {
+                m_wrapPending = false;
+            }
+        }
+        ImGui::EndChild();
+    }
+
+    if (m_notesPreviewOpen) {
+        ImGui::BeginChild("preview", ImVec2(0, previewH), ImGuiChildFlags_Borders);
+        MarkdownRenderer::render(m_editorBuffer,
+                                 m_notes.absolute(m_selectedPath).parent_path());
+        ImGui::EndChild();
+    }
+
+    if (!m_notesEditorOpen && !m_notesPreviewOpen) {
+        ImGui::TextDisabled("Use the 'Type' and 'Render' toggles above to open a view.");
+    }
 
     ImGui::EndChild();
     ImGui::End();
@@ -613,7 +950,8 @@ void Application::drawProjectionPanel() {
             ImGui::PushID(idx);
             bool sel = (idx == m_selectedImage);
             if (sel) {
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.25f, 0.5f, 0.85f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_Button,
+                                      ImGui::GetStyle().Colors[ImGuiCol_ButtonActive]);
             }
             if (ImGui::Button(label.c_str(), ImVec2(thumb, thumb))) {
                 m_selectedImage = idx;
@@ -654,10 +992,12 @@ void Application::drawInitiativePanel() {
     // Add row.
     ImGui::SetNextItemWidth(200);
     ImGui::InputText("Name", m_initiativeName, sizeof(m_initiativeName));
+    RetainLastWidgetFocus();
     ImGui::SameLine();
     static int newInit = 0;
     ImGui::SetNextItemWidth(90);
     ImGui::InputInt("Init", &newInit);
+    RetainLastWidgetFocus();
     ImGui::SameLine();
     if (ImGui::Button("Add")) {
         std::string name = m_initiativeName[0] ? m_initiativeName : "Combatant";
@@ -666,6 +1006,7 @@ void Application::drawInitiativePanel() {
         m_initiativeName[0] = '\0';
         m_initiativeDirty = true;
     }
+    RetainLastWidgetFocus();
 
     ImGui::Separator();
 
@@ -673,22 +1014,26 @@ void Application::drawInitiativePanel() {
     if (ImGui::Button("Previous")) {
         m_initiative.previousTurn();
     }
+    RetainLastWidgetFocus();
     ImGui::SameLine();
     int round = m_initiative.round();
-    ImGui::SetNextItemWidth(80);
+    ImGui::SetNextItemWidth(90);
     if (ImGui::InputInt("Round", &round)) {
         m_initiative.setRound(round);
         m_initiativeDirty = true;
     }
+    RetainLastWidgetFocus();
     ImGui::SameLine();
     if (ImGui::Button("Next turn")) {
         m_initiative.nextTurn();
     }
+    RetainLastWidgetFocus();
     ImGui::SameLine();
     if (ImGui::Button("Sort by init")) {
         m_initiative.sortByInitiative();
         m_initiativeDirty = true;
     }
+    RetainLastWidgetFocus();
     ImGui::SameLine();
     if (ImGui::Button("Roll all d20")) {
         static std::mt19937 rng(std::random_device{}());
@@ -699,6 +1044,7 @@ void Application::drawInitiativePanel() {
         m_initiative.sortByInitiative();
         m_initiativeDirty = true;
     }
+    RetainLastWidgetFocus();
     ImGui::SameLine();
     if (ImGui::Button("Clear all")) {
         m_initiative.participants().clear();
@@ -706,6 +1052,7 @@ void Application::drawInitiativePanel() {
         m_initiative.setRound(1);
         m_initiativeDirty = true;
     }
+    RetainLastWidgetFocus();
 
     ImGui::Separator();
 
@@ -736,8 +1083,10 @@ void Application::drawInitiativePanel() {
             ImGui::TableNextRow();
 
             if (m_initiative.isCurrent(i)) {
+                ImVec4 currColor = ab::accentColor();
+                currColor.w = 0.55f;
                 ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,
-                                       ImGui::GetColorU32(ImVec4(0.2f, 0.45f, 0.8f, 0.55f)));
+                                       ImGui::GetColorU32(currColor));
             }
 
             ImGui::TableSetColumnIndex(0);
@@ -751,6 +1100,7 @@ void Application::drawInitiativePanel() {
                 p.name = nameBuf;
                 m_initiativeDirty = true;
             }
+            RetainLastWidgetFocus();
 
             ImGui::TableSetColumnIndex(2);
             ImGui::SetNextItemWidth(-1);
@@ -759,6 +1109,7 @@ void Application::drawInitiativePanel() {
                 p.initiative = init;
                 m_initiativeDirty = true;
             }
+            RetainLastWidgetFocus();
 
             ImGui::TableSetColumnIndex(3);
             float hpW = (ImGui::GetColumnWidth() - 12.0f) * 0.5f;
@@ -771,6 +1122,7 @@ void Application::drawInitiativePanel() {
                 m_initiative.adjustHp(static_cast<int>(i), hp - p.hp);
                 m_initiativeDirty = true;
             }
+            RetainLastWidgetFocus();
             ImGui::SameLine(0, 2);
             ImGui::Text("/");
             ImGui::SameLine(0, 2);
@@ -780,6 +1132,7 @@ void Application::drawInitiativePanel() {
                 m_initiative.setMaxHp(static_cast<int>(i), maxHp);
                 m_initiativeDirty = true;
             }
+            RetainLastWidgetFocus();
 
             ImGui::TableSetColumnIndex(4);
             ImGui::SetNextItemWidth(-1);
@@ -789,11 +1142,13 @@ void Application::drawInitiativePanel() {
                 p.status = statusBuf;
                 m_initiativeDirty = true;
             }
+            RetainLastWidgetFocus();
 
             ImGui::TableSetColumnIndex(5);
             if (ImGui::SmallButton("X")) {
                 removeId = p.id;
             }
+            RetainLastWidgetFocus();
 
             ImGui::PopID();
         }
@@ -986,6 +1341,9 @@ void Application::draw() {
         }
     }
 
+    // Theme selector dialog.
+    drawThemePicker();
+
     // Unsaved-changes prompt (switch note or quit).
     if (m_promptUnsaved) {
         ImGui::OpenPopup("Unsaved changes");
@@ -1029,6 +1387,7 @@ void Application::draw() {
     ImGuiViewport* vp = ImGui::GetMainViewport();
     m_layout.handleKeys(dockId, vp->WorkSize);
     m_layout.renderOverlay();
+    handleThemeKeys();
 
     ImGui::End();  // ##HostWindow
 }
@@ -1053,7 +1412,8 @@ void Application::newFrame() {
     int displayH = 0;
     glfwGetFramebufferSize(window, &displayW, &displayH);
     glViewport(0, 0, displayW, displayH);
-    glClearColor(0.12f, 0.12f, 0.14f, 1.0f);
+    const ImVec4 bg = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
+    glClearColor(bg.x, bg.y, bg.z, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());

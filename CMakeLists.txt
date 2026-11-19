@@ -169,3 +169,13 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 endif()
 
 find_package(Threads REQUIRED)
+
+# Regenerate a clangd-friendly compile_commands.json at the repo root after
+# every build/configure (see scripts/gen_compile_commands.sh).
+add_custom_target(regenerate_clangd_db ALL
+  COMMAND ${CMAKE_COMMAND} -E env CXX=${CMAKE_CXX_COMPILER}
+          bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/gen_compile_commands.sh
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  COMMENT "Regenerating root compile_commands.json for clangd"
+  VERBATIM
+)

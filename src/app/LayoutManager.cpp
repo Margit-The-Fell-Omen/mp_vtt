@@ -533,6 +533,7 @@ void LayoutManager::renderOverlay() {
     ImGui::Text("x            close panel (r reopens)");
     ImGui::Text("r            reset layout");
     ImGui::Text("=            equalize panes");
+    ImGui::Text("] / [        next / previous theme");
     ImGui::TextUnformatted("(Tab = default widget navigation)");
     ImGui::End();
 }

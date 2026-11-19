@@ -34,6 +34,7 @@ private:
     void drawInitiativePanel();
 
     void openNotesFolder(const fs::path& path);
+    void closeNotesFolder();
     void openImagesFolder(const fs::path& path);
     void selectNote(const std::string& relativePath);
     void requestOpenNote(const std::string& relativePath);
@@ -44,7 +45,12 @@ private:
     void doDelete();
     void requestQuit();
     void applySettingsTheme();
+    void setTheme(const char* id);
+    void cycleTheme(int delta);
+    void handleThemeKeys();
+    void drawThemePicker();
     void saveSettingsNow();
+    void wrapEditorSelection(const char* before, const char* after);
 
     // Modal folder picker. Returns true when a folder was chosen (sets out).
     bool drawFolderPicker(const char* title, std::string& out);
@@ -71,7 +77,17 @@ private:
     std::string m_selectedPath;
     std::string m_editorBuffer;
     std::string m_loadedPath;
+    std::string m_reopenRoot;     // last notes root, for quick re-open after close
     bool m_editorDirty = false;
+    bool m_notesEditorOpen = true;   // type window visible in Notes panel
+    bool m_notesPreviewOpen = true;  // render view visible in Notes panel
+
+    // Editor selection/cursor (byte offsets) + pending wrap application.
+    int m_editorSelStart = 0;
+    int m_editorSelEnd = 0;
+    bool m_wrapPending = false;
+    int m_wrapSelStart = 0;
+    int m_wrapSelEnd = 0;
 
     // Rename / delete modals.
     bool m_renameOpen = false;
@@ -100,6 +116,9 @@ private:
     // New note dialog state.
     bool m_newNoteOpen = false;
     char m_newNoteName[256] = {0};
+
+    // Theme selector dialog state.
+    bool m_themePickerOpen = false;
 
     // Projection UI state.
     int m_selectedImage = -1;

@@ -29,6 +29,7 @@
             libxkbcommon
             fontconfig
             dejavu_fonts
+            python3
           ];
 
           # GLFW dlopen()s these shared libraries at runtime rather than
@@ -47,6 +48,7 @@
           ];
 
           shellHook = ''
+            ./scripts/gen_compile_commands.sh 2>/dev/null || true
             echo "Adventure Board dev shell ready."
           '';
         };

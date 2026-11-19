@@ -1,0 +1,5 @@
+CompileFlags:
+  CompilationDatabase: .
+  Compiler: clang++
+  Add:
+    - -std=c++17
