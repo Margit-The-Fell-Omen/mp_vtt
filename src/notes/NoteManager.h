@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/Storage.h"
+
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -13,6 +15,8 @@ namespace fs = std::filesystem;
 class NoteManager {
 public:
     using Path = fs::path;
+
+    void setStorage(Storage& storage) { m_storage = &storage; }
 
     // Scans the root (destructively) and rebuilds the folder/file tree.
     void rescan(const Path& root);
@@ -43,12 +47,16 @@ public:
     // Deletes a note (file only). Directories with children are rejected.
     bool remove(const Path& relativePath);
 
-    // Absolute filesystem path for a relative path.
-    Path absolute(const Path& relativePath) const { return m_root / relativePath; }
+    // Absolute/opaque location for a relative path.
+    Path absolute(const Path& relativePath) const {
+        return m_storage ? m_storage->join(m_root, relativePath)
+                         : m_root / relativePath;
+    }
 
 private:
     bool isMarkdown(const Path& p) const;
 
+    Storage* m_storage = nullptr;
     Path m_root;
     std::vector<Entry> m_entries;  // flat list for the tree (recursive walk)
 };

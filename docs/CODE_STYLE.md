@@ -160,6 +160,25 @@ if (!m_window || !m_shaderReady) {
 - Prefer CMake targets and compile definitions over ad-hoc preprocessor logic.
   Optional features use `AB_HAVE_*` definitions set by `CMakeLists.txt`.
 
+## Platform code
+
+The cross-platform work ([CROSS_PLATFORM.md](CROSS_PLATFORM.md)) established a
+`src/platform/` boundary, and the Android phase will extend it:
+
+- File access goes through `core/Storage.h`. `DesktopStorage` may use
+  `std::filesystem`; Android will use SAF tree/document URIs.
+- Do not include GLFW, EGL, X11, or Android headers from `core/`, `notes/`,
+  `initiative/`, or `projection/`. Use `platform/GL.h`, `platform/Platform.h`,
+  and `core/Storage.h` instead.
+- Keep `#ifdef` blocks at the platform boundary, not scattered through services
+  or UI code.
+- Convert between persisted/UI UTF-8 strings and filesystem paths with
+  `platform::pathFromUtf8()` / `platform::pathToUtf8()`.
+- Android Java/Kotlin code lives under `android/`; keep the JNI surface
+  small and wrap it in a C++ class in `src/platform/android/`.
+- Treat SAF locations as opaque strings. Do not assume a path supports
+  `std::filesystem` on Android.
+
 ## Tests
 
 There is currently no automated test suite. When adding one, put it in a

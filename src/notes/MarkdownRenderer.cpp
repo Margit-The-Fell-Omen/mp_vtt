@@ -1,9 +1,11 @@
 #include "notes/MarkdownRenderer.h"
 
 #include "app/Theme.h"
+#include "core/Storage.h"
 #include "imgui_md.h"
+#include "platform/Platform.h"
 
-#include <glad/glad.h>
+#include "platform/GL.h"
 #include <stb_image.h>
 
 #include <algorithm>
@@ -11,12 +13,18 @@
 #include <filesystem>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace ab {
 
 namespace fs = std::filesystem;
 
 namespace {
+
+bool isExternalUrl(const std::string& href) {
+    return href.rfind("http://", 0) == 0 || href.rfind("https://", 0) == 0 ||
+           href.rfind("mailto:", 0) == 0;
+}
 
 // A cached GPU texture for an inline image.
 struct ImageCacheEntry {
@@ -26,7 +34,8 @@ struct ImageCacheEntry {
 };
 
 ImageCacheEntry* loadImageCache(const std::string& rawUrl,
-                                const fs::path& baseDir) {
+                                const fs::path& baseDir,
+                                Storage& storage) {
     static std::unordered_map<std::string, ImageCacheEntry> cache;
 
     if (rawUrl.empty()) {
@@ -42,16 +51,20 @@ ImageCacheEntry* loadImageCache(const std::string& rawUrl,
         cleaned.erase(hash);
     }
 
-    fs::path p(cleaned);
-    fs::path path =
-        p.is_relative() ? (baseDir.empty() ? fs::path() : baseDir / p) : p;
-    std::string key = path.string();
+    fs::path p = platform::pathFromUtf8(cleaned);
+    Storage::Path path = p.is_relative()
+                             ? (baseDir.empty() ? Storage::Path()
+                                                : storage.join(baseDir, p))
+                             : p;
+    std::string key = platform::pathToUtf8(path);
 
     auto it = cache.find(key);
     if (it != cache.end()) {
         return &it->second;
     }
-    if (!fs::exists(path)) {
+
+    std::vector<unsigned char> bytes;
+    if (!storage.readBytes(path, bytes) || bytes.empty()) {
         return nullptr;
     }
 
@@ -59,7 +72,8 @@ ImageCacheEntry* loadImageCache(const std::string& rawUrl,
     int h = 0;
     int comp = 0;
     stbi_set_flip_vertically_on_load(0);
-    stbi_uc* data = stbi_load(key.c_str(), &w, &h, &comp, 4);
+    stbi_uc* data = stbi_load_from_memory(
+        bytes.data(), static_cast<int>(bytes.size()), &w, &h, &comp, 4);
     if (!data || w <= 0 || h <= 0) {
         if (data) {
             stbi_image_free(data);
@@ -91,9 +105,11 @@ ImageCacheEntry* loadImageCache(const std::string& rawUrl,
 // Renderer implementation built on imgui_md (MD4C-backed).
 class Renderer final : public imgui_md {
 public:
-    static void Render(const std::string& markdown, const fs::path& baseDir) {
+    static void Render(const std::string& markdown, const fs::path& baseDir,
+                       Storage& storage) {
         static Renderer self;
         self.m_baseDir = baseDir;
+        self.m_storage = &storage;
         self.m_cachedFonts = ab::fonts();
         self.print(markdown.c_str(), markdown.c_str() + markdown.size());
     }
@@ -129,7 +145,9 @@ protected:
     }
 
     bool get_image(image_info& nfo) const override {
-        ImageCacheEntry* e = loadImageCache(m_href, m_baseDir);
+        ImageCacheEntry* e =
+            m_storage ? loadImageCache(m_href, m_baseDir, *m_storage)
+                      : nullptr;
         if (!e || e->width <= 0 || e->height <= 0) {
             return false;
         }
@@ -151,7 +169,10 @@ protected:
     }
 
     void open_url() const override {
-        // External URL opening is intentionally a no-op for now.
+        if (!isExternalUrl(m_href)) {
+            return;
+        }
+        platform::openUrl(m_href);
     }
 
     // A single source newline inside a paragraph (soft break) should be
@@ -160,28 +181,46 @@ protected:
         ImGui::NewLine();
     }
 
-    void BLOCK_CODE(const MD_BLOCK_CODE_DETAIL*, bool e) override {
+    void SPAN_CODE(bool e) override {
+        ImFont* mono =
+            m_cachedFonts.mono ? m_cachedFonts.mono : ImGui::GetFont();
         if (e) {
-            m_is_code = true;
+            ImGui::PushFont(mono);
             ImGui::PushStyleColor(ImGuiCol_Text, ab::accentColor());
-            ImGui::NewLine();
         } else {
             ImGui::PopStyleColor();
-            m_is_code = false;
+            ImGui::PopFont();
+        }
+    }
+
+    void BLOCK_CODE(const MD_BLOCK_CODE_DETAIL*, bool e) override {
+        ImFont* mono =
+            m_cachedFonts.mono ? m_cachedFonts.mono : ImGui::GetFont();
+        if (e) {
+            m_is_code = true;
+            ImGui::PushFont(mono);
+            ImGui::PushStyleColor(ImGuiCol_Text, ab::accentColor());
             ImGui::NewLine();
+            ImGui::Indent();
+        } else {
+            ImGui::Unindent();
+            ImGui::PopStyleColor();
+            ImGui::PopFont();
+            m_is_code = false;
         }
     }
 
 private:
     mutable fs::path m_baseDir;
     mutable FontSet m_cachedFonts;
+    Storage* m_storage = nullptr;
 };
 
 }  // namespace
 
 void MarkdownRenderer::render(const std::string& markdown,
-                              const fs::path& baseDir) {
-    Renderer::Render(markdown, baseDir);
+                              const fs::path& baseDir, Storage& storage) {
+    Renderer::Render(markdown, baseDir, storage);
 }
 
 }  // namespace ab

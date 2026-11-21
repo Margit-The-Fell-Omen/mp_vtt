@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/Storage.h"
+
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -19,6 +21,8 @@ struct Image {
 
 class ImageStore {
 public:
+    void setStorage(Storage& storage) { m_storage = &storage; }
+
     static bool isImageFile(const fs::path& p);
 
     // Scans a folder for supported image files (sorted by filename).
@@ -34,6 +38,7 @@ public:
     std::shared_ptr<Image> load(const fs::path& path);
 
 private:
+    Storage* m_storage = nullptr;
     fs::path m_root;
     std::vector<fs::path> m_images;
 };

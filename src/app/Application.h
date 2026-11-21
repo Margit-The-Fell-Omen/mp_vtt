@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Database.h"
+#include "platform/desktop/DesktopStorage.h"
 #include "core/Project.h"
 #include "core/Settings.h"
 #include "initiative/InitiativeTracker.h"
@@ -23,9 +24,19 @@ public:
 
     int run();
 
+#if defined(__ANDROID__)
+    bool initAndroid(void* nativeWindow);
+    void frameAndroid();
+    void shutdownAndroid();
+#endif
+
 private:
     bool init();
+    bool initCore();
+    bool initGraphics();
     void shutdown();
+    void shutdownGraphics();
+    void shutdownCore();
     void newFrame();
     void draw();
     void drawMenuBar();
@@ -60,6 +71,7 @@ private:
     Settings m_settings;
     Database m_database;
     Project m_project;
+    DesktopStorage m_storage;
     NoteManager m_notes;
     ImageStore m_images;
     ProjectionWindow m_projection;
@@ -88,6 +100,10 @@ private:
     bool m_wrapPending = false;
     int m_wrapSelStart = 0;
     int m_wrapSelEnd = 0;
+
+    // Pending auto-inserted list marker (applied on the next frame).
+    bool m_autoListPending = false;
+    int m_autoListSel = 0;
 
     // Rename / delete modals.
     bool m_renameOpen = false;

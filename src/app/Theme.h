@@ -34,11 +34,12 @@ void applyTheme(const std::string& name);
 
 // Fonts used by the application (and markdown renderer).
 struct FontSet {
-    ImFont* regular = nullptr;   // body text
-    ImFont* bold = nullptr;      // strong / table headers
-    ImFont* italic = nullptr;    // emphasis
+    ImFont* regular = nullptr;    // body text
+    ImFont* bold = nullptr;       // strong / table headers
+    ImFont* italic = nullptr;     // emphasis
     ImFont* boldItalic = nullptr; // strong + emphasis
-    ImFont* h1 = nullptr;        // level-1 headings (larger bold)
+    ImFont* mono = nullptr;       // inline code / fenced code blocks
+    ImFont* h1 = nullptr;         // level-1 headings (larger bold)
 };
 
 // Loads larger, sharper system fonts if available; falls back to the

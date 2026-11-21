@@ -479,6 +479,30 @@ void imgui_md::render_text(const char* str, const char* str_end)
 	if (!is_lf)ImGui::SameLine(0.0f, 0.0f);
 }
 
+// Renders text belonging to a fenced/indented code block. MD4C emits one
+// callback per line piece (indentation, text, newline), so chunks must stay on
+// the same visual line until an explicit '\n' arrives. No wrapping or
+// whitespace stripping is performed.
+static void render_code_text(const char* str, const char* str_end)
+{
+	const char* p = str;
+	while (p < str_end) {
+		const char* nl = static_cast<const char*>(
+			std::memchr(p, '\n', static_cast<size_t>(str_end - p)));
+		if (nl) {
+			if (nl > p) {
+				ImGui::TextUnformatted(p, nl);
+			}
+			ImGui::NewLine();
+			p = nl + 1;
+		} else {
+			ImGui::TextUnformatted(p, str_end);
+			ImGui::SameLine(0.0f, 0.0f);
+			p = str_end;
+		}
+	}
+}
+
 
 bool imgui_md::render_entity(const char* str, const char* str_end)
 {
@@ -611,7 +635,11 @@ int imgui_md::text(MD_TEXTTYPE type, const char* str, const char* str_end)
 		render_text(str, str_end);
 		break;
 	case MD_TEXT_CODE:
-		render_text(str, str_end);
+		if (m_is_code) {
+			render_code_text(str, str_end);
+		} else {
+			render_text(str, str_end);
+		}
 		break;
 	case MD_TEXT_NULLCHAR:
 		break;

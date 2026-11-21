@@ -3,6 +3,16 @@
 
 # Build output
 build/
+build-android/
+.android-sdk/
+
+# Android/Gradle
+android/.gradle/
+android/.cxx/
+android/build/
+android/local.properties
+android/app/build/
+android/app/.cxx/
 
 # Nix
 result

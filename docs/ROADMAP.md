@@ -9,6 +9,9 @@ what the game club needs at the table.
 ### Application shell
 
 - C++17 CMake project built with GLFW + OpenGL 3.3 + Dear ImGui docking branch.
+  Linux is validated; Windows build support is implemented but not hardware-
+  validated; Android builds an APK but is not runtime-validated. See
+  [CROSS_PLATFORM.md](CROSS_PLATFORM.md).
 - Main window with a dockable layout: Notes, Initiative, Projection.
 - Main menu: File (new note, open notes folder, quit) and View (theme,
   layout reset, panel visibility).
@@ -17,8 +20,8 @@ what the game club needs at the table.
 - Default layout is built on first launch; layout can be reset at runtime.
 - X11 is preferred by default on Linux with an opt-in Wayland path via
   `AB_GLFW_PLATFORM=wayland`.
-- System font discovery via fontconfig (when available) with DejaVu/Liberation
-  fallbacks and an `AB_FONT` override.
+- Bundled Liberation Sans/Mono fonts on every platform, with fontconfig and
+  DejaVu/Liberation path discovery as Linux fallbacks and an `AB_FONT` override.
 
 ### Notes
 
@@ -36,7 +39,7 @@ what the game club needs at the table.
 - Type / Render checkboxes hide and reopen the editor and preview independently;
   the editor keeps its buffer when hidden.
 - Relative inline images in the preview, cached as GL textures by absolute path.
-- External URLs are intentionally ignored for now.
+- External URLs open in the system browser (`xdg-open` on Linux).
 
 ### Projection
 
@@ -120,6 +123,9 @@ what the game club needs at the table.
 
 ### Persistence and infrastructure
 
+- Backend-neutral `Storage` abstraction with a `DesktopStorage` backend.
+- Platform helpers for config paths, URL opening, UTF-8 paths, and Windows
+  drive roots.
 - SQLite settings table and initiative tables.
 - Notes/images roots, theme, and window size persisted.
 - CMake FetchContent for GLFW, Dear ImGui, MD4C, SQLite, and stb.
@@ -132,9 +138,13 @@ what the game club needs at the table.
 
 These are current limitations, not necessarily the next tasks:
 
+- Windows build support is implemented but has not been validated on Windows
+  hardware.
+- Android builds a debug APK but has not been runtime-validated; SAF folder
+  access and Presentation projection are still pending. The plan is in
+  [CROSS_PLATFORM.md](CROSS_PLATFORM.md).
 - The File menu advertises `Ctrl+N` for a new note, but the shortcut is not
   wired yet.
-- Markdown external URLs are a no-op.
 - Notes can only rename/delete files, not directories.
 - No search, backlinks, or wiki-link navigation in notes.
 - No autosave for notes; unsaved changes are only handled by the save button
@@ -150,6 +160,35 @@ These are current limitations, not necessarily the next tasks:
 
 ## Planned / proposed
 
+### Cross-platform (planned)
+
+The full design and acceptance criteria are in
+[CROSS_PLATFORM.md](CROSS_PLATFORM.md). Linux behavior is preserved throughout.
+
+1. **Windows desktop** (implemented, validation pending)
+   - MSVC + CMake build, WGL windowing, and CI.
+   - Platform helpers for config paths, URL opening, and UTF-8 path handling.
+   - In-app folder picker with Windows drive enumeration.
+   - Bundled fonts shared with the other platforms.
+2. **Shared seams** (implemented)
+   - `Storage` abstraction, split graphics/core lifecycle, GL abstraction,
+     bundled fonts, and the shared `ProjectionRenderer` are in place.
+   - Desktop implementation keeps the current `std::filesystem` and GLFW
+     behavior.
+3. **Android shell** (in progress)
+   - NativeActivity + EGL + OpenGL ES 3 host with `imgui_impl_android`.
+   - Touch input and soft keyboard via JNI.
+   - App-private database, `imgui.ini`, and default notes/images folders;
+     SAF folder selection is still pending.
+   - `minSdk` 26; sideloaded `arm64-v8a` / `x86_64` debug APK builds.
+4. **Android projection**
+   - Android `Presentation` + `SurfaceView` + EGL, reusing
+     `ProjectionRenderer`.
+   - External-display enumeration and graceful fallback when none is available.
+5. **CI and packaging**
+   - GitHub Actions matrix for Linux, Windows, and Android.
+   - APK build artifact and signing/sideloading notes.
+
 ### Near term
 
 - Wire the advertised `Ctrl+N` shortcut and add a small, documented shortcut
@@ -161,8 +200,7 @@ These are current limitations, not necessarily the next tasks:
   fade-out after the window opens.
 - Notes: autosave or periodic draft recovery; search across notes.
 - Notes: directory rename/delete and safer tree operations.
-- Markdown: open external URLs with the system browser; handle `file://` and
-  local attachment links.
+- Markdown: handle `file://` and local attachment links.
 - Initiative: visible conditions/status editor, drag-to-reorder, and undo for
   HP changes.
 - Add a settings dialog for theme, font, projection defaults, and window
@@ -185,7 +223,8 @@ These are current limitations, not necessarily the next tasks:
 
 - Headless unit tests for pure logic: initiative ordering and HP clamping,
   palette derivation, note tree scanning, settings round-trips.
-- CI builds and a packaging target (AppImage, Flatpak, or a Nix package).
+- Linux packaging (AppImage, Flatpak, or a Nix package) beyond the existing
+  Linux/Windows CI jobs and the Android APK artifact.
 - Structured logging with a debug flag instead of ad-hoc `stderr` messages.
 - Crash/error reporting that keeps user data safe.
 - Localization and accessibility review (keyboard-only workflows, contrast

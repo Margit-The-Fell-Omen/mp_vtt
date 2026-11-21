@@ -1,5 +1,7 @@
 #include "app/Theme.h"
 
+#include "platform/Platform.h"
+
 #include <imgui.h>
 
 #include <cstdio>
@@ -506,6 +508,56 @@ static ImFont* addFont(ImGuiIO& io, const std::string& path, float size) {
                                         bulletGlyphRanges());
 }
 
+// Fonts shipped in assets/fonts, shared by every platform.
+static std::string bundledFontPath(const char* name) {
+    std::string dir = platform::bundledFontDir();
+    if (dir.empty()) {
+#ifdef AB_ASSET_DIR
+        if (AB_ASSET_DIR[0] != '\0') {
+            dir = platform::pathToUtf8(fs::path(AB_ASSET_DIR) / "fonts");
+        }
+#endif
+    }
+    if (dir.empty()) {
+        return "";
+    }
+    const fs::path path = platform::pathFromUtf8(dir) / name;
+    if (fs::exists(path)) {
+        return platform::pathToUtf8(path);
+    }
+    return "";
+}
+
+// Best-effort monospace font for code spans/blocks.
+static std::string findMonoPath(const std::string& regularPath) {
+#ifdef AB_HAVE_FONTCONFIG
+    static const char* kFamilies[] = {"DejaVu Sans Mono", "Liberation Mono",
+                                      "Noto Sans Mono"};
+    for (const char* family : kFamilies) {
+        std::string p = findFontPath(family);
+        if (!p.empty()) {
+            return p;
+        }
+    }
+#endif
+    if (!regularPath.empty()) {
+        const fs::path dir = fs::path(regularPath).parent_path();
+        static const char* kFiles[] = {
+            "DejaVuSansMono.ttf",
+            "LiberationMono-Regular.ttf",
+            "NotoSansMono-Regular.ttf",
+            "DejaVuSansMono-Bold.ttf",
+        };
+        for (const char* name : kFiles) {
+            const fs::path cand = dir / name;
+            if (fs::exists(cand)) {
+                return cand.string();
+            }
+        }
+    }
+    return "";
+}
+
 void loadFonts(ImGuiIO& io) {
     const char* override = std::getenv("AB_FONT");
     if (override && *override) {
@@ -514,56 +566,70 @@ void loadFonts(ImGuiIO& io) {
         g_fonts.bold = f;
         g_fonts.italic = f;
         g_fonts.boldItalic = f;
+        g_fonts.mono = f;
         g_fonts.h1 = f;
         return;
     }
 
-    // 1. Preferred family via fontconfig.
+    // 1. Bundled fonts, for a consistent look on every platform.
     std::string regularPath;
     std::string boldPath;
     std::string italicPath;
     std::string boldItalicPath;
+    std::string monoPath;
+    regularPath = bundledFontPath("LiberationSans-Regular.ttf");
+    if (!regularPath.empty()) {
+        boldPath = bundledFontPath("LiberationSans-Bold.ttf");
+        italicPath = bundledFontPath("LiberationSans-Italic.ttf");
+        boldItalicPath = bundledFontPath("LiberationSans-BoldItalic.ttf");
+        monoPath = bundledFontPath("LiberationMono-Regular.ttf");
+    }
+
+    // 2. Preferred family via fontconfig when the bundle is unavailable.
 #ifdef AB_HAVE_FONTCONFIG
-    const char* families[] = {"DejaVu Sans", "Liberation Sans",
-                              "Noto Sans", "Cantarell"};
-    for (const char* family : families) {
-        regularPath = findFontPath(family);
-        if (!regularPath.empty()) {
-            auto good = [&](const std::string& p, const std::string& base) {
-                return !p.empty() && p != base;
-            };
-            // Bold-italic must be distinct from regular, bold AND italic,
-            // otherwise ***text*** would render as plain italic-only.
-            auto goodBI = [&](const std::string& p) {
-                return good(p, regularPath) && good(p, boldPath) &&
-                       (italicPath.empty() || good(p, italicPath));
-            };
-            boldPath = findFontPath(family, "Bold");
-            if (!good(boldPath, regularPath)) {
-                boldPath = siblingFontPath(regularPath, {"Bold", "b", "B"});
+    if (regularPath.empty()) {
+        const char* families[] = {"DejaVu Sans", "Liberation Sans",
+                                  "Noto Sans", "Cantarell"};
+        for (const char* family : families) {
+            regularPath = findFontPath(family);
+            if (!regularPath.empty()) {
+                auto good = [&](const std::string& p, const std::string& base) {
+                    return !p.empty() && p != base;
+                };
+                // Bold-italic must be distinct from regular, bold AND italic,
+                // otherwise ***text*** would render as plain italic-only.
+                auto goodBI = [&](const std::string& p) {
+                    return good(p, regularPath) && good(p, boldPath) &&
+                           (italicPath.empty() || good(p, italicPath));
+                };
+                boldPath = findFontPath(family, "Bold");
+                if (!good(boldPath, regularPath)) {
+                    boldPath =
+                        siblingFontPath(regularPath, {"Bold", "b", "B"});
+                }
+                italicPath = findFontPath(family, "Italic");
+                if (!good(italicPath, regularPath)) {
+                    italicPath = findFontPath(family, "Oblique");
+                }
+                if (!good(italicPath, regularPath)) {
+                    italicPath = siblingFontPath(regularPath,
+                                                 {"Oblique", "Italic", "Obl"});
+                }
+                boldItalicPath = findFontPath(family, "Bold Italic");
+                if (!goodBI(boldItalicPath)) {
+                    boldItalicPath = findFontPath(family, "Bold Oblique");
+                }
+                if (!goodBI(boldItalicPath)) {
+                    boldItalicPath = siblingFontPath(
+                        regularPath, {"BoldOblique", "BoldItalic"});
+                }
+                break;
             }
-            italicPath = findFontPath(family, "Italic");
-            if (!good(italicPath, regularPath)) {
-                italicPath = findFontPath(family, "Oblique");
-            }
-            if (!good(italicPath, regularPath)) {
-                italicPath =
-                    siblingFontPath(regularPath, {"Oblique", "Italic", "Obl"});
-            }
-            boldItalicPath = findFontPath(family, "Bold Italic");
-            if (!goodBI(boldItalicPath)) {
-                boldItalicPath = findFontPath(family, "Bold Oblique");
-            }
-            if (!goodBI(boldItalicPath)) {
-                boldItalicPath = siblingFontPath(
-                    regularPath, {"BoldOblique", "BoldItalic"});
-            }
-            break;
         }
     }
 #endif
 
-    // 2. Hardcoded fallbacks (non-Nix systems).
+    // 3. Hardcoded fallbacks (non-Nix systems).
     if (regularPath.empty()) {
         static const char* kCandidates[] = {
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -585,6 +651,9 @@ void loadFonts(ImGuiIO& io) {
     }
 
     if (!regularPath.empty()) {
+        if (monoPath.empty()) {
+            monoPath = findMonoPath(regularPath);
+        }
         g_fonts.regular = addFont(io, regularPath, 18.0f);
         g_fonts.bold = addFont(io, boldPath, 18.0f);
         if (!g_fonts.bold) {
@@ -602,6 +671,10 @@ void loadFonts(ImGuiIO& io) {
         if (!g_fonts.h1) {
             g_fonts.h1 = g_fonts.bold;
         }
+        g_fonts.mono = addFont(io, monoPath, 18.0f);
+        if (!g_fonts.mono) {
+            g_fonts.mono = g_fonts.regular;
+        }
         return;
     }
 
@@ -612,6 +685,7 @@ void loadFonts(ImGuiIO& io) {
     g_fonts.bold = ImGui::GetFont();
     g_fonts.italic = ImGui::GetFont();
     g_fonts.boldItalic = ImGui::GetFont();
+    g_fonts.mono = ImGui::GetFont();
     g_fonts.h1 = ImGui::GetFont();
 }
 

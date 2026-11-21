@@ -2,17 +2,31 @@
 
 #include "app/Theme.h"
 #include "notes/MarkdownRenderer.h"
-
-#include <glad/glad.h>
-#include <GLFW/glfw3.h>
+#include "platform/Platform.h"
 
 #include <imgui.h>
 #include <imgui_internal.h>
-#include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_opengl3.h>
 
+#if defined(__ANDROID__)
+#include "platform/GL.h"
+
+#include <EGL/egl.h>
+#include <android/log.h>
+#include <android/native_window.h>
+#include <android_native_app_glue.h>
+#include <backends/imgui_impl_android.h>
+#include <jni.h>
+#else
+#include <GLFW/glfw3.h>
+#include <glad/glad.h>
+#include <backends/imgui_impl_glfw.h>
+#endif
+
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <functional>
@@ -22,9 +36,11 @@ namespace ab {
 
 namespace fs = std::filesystem;
 
+#if !defined(__ANDROID__)
 static void glfwErrorCallback(int error, const char* description) {
     std::fprintf(stderr, "GLFW error %d: %s\n", error, description);
 }
+#endif
 
 // After a button is pressed or a field is entered, keep it as the keyboard
 // navigation focus so pressing Tab continues from that widget.
@@ -59,31 +75,86 @@ static int runLenBefore(const std::string& s, int end, char c) {
     return r;
 }
 
-static std::string homeDir() {
-    const char* home = std::getenv("HOME");
-    if (home && *home) {
-        return home;
+// Builds the next Markdown list-item prefix from a list line. Preserves the
+// indentation, increments ordered numbering, and keeps the bullet character.
+// Returns false for non-list lines and for empty items (which end the list).
+static bool nextListItemPrefix(const std::string& line, std::string& out) {
+    size_t i = 0;
+    while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) {
+        ++i;
     }
-    const char* up = std::getenv("USERPROFILE");
-    if (up && *up) {
-        return up;
+    if (i >= line.size()) {
+        return false;
     }
-    return ".";
+    const std::string indent = line.substr(0, i);
+
+    bool ordered = false;
+    char bullet = 0;
+    char delim = '.';
+    int number = 0;
+    size_t markerEnd = i;
+    if (line[i] == '-' || line[i] == '*' || line[i] == '+') {
+        bullet = line[i];
+        markerEnd = i + 1;
+    } else if (std::isdigit(static_cast<unsigned char>(line[i]))) {
+        ordered = true;
+        size_t j = i;
+        while (j < line.size() &&
+               std::isdigit(static_cast<unsigned char>(line[j]))) {
+            ++j;
+        }
+        if (j >= line.size() || (line[j] != '.' && line[j] != ')')) {
+            return false;
+        }
+        number = std::atoi(line.substr(i, j - i).c_str());
+        delim = line[j];
+        markerEnd = j + 1;
+    } else {
+        return false;
+    }
+
+    if (markerEnd < line.size() && line[markerEnd] != ' ' &&
+        line[markerEnd] != '\t') {
+        return false;
+    }
+    size_t contentStart = markerEnd;
+    while (contentStart < line.size() &&
+           (line[contentStart] == ' ' || line[contentStart] == '\t')) {
+        ++contentStart;
+    }
+    if (contentStart >= line.size()) {
+        return false;  // empty item: pressing Enter ends the list
+    }
+
+    std::string task;
+    if (line.compare(contentStart, 4, "[ ] ") == 0 ||
+        line.compare(contentStart, 4, "[x] ") == 0 ||
+        line.compare(contentStart, 4, "[X] ") == 0) {
+        task = "[ ] ";
+    }
+
+    if (ordered) {
+        out = indent + std::to_string(number + 1) + delim + " " + task;
+    } else {
+        out = indent + std::string(1, bullet) + " " + task;
+    }
+    return true;
 }
 
-static std::string configDir() {
-    return homeDir() + "/.adventureboard";
+static std::string homeDir() {
+    return platform::homeDir();
 }
 
 static std::string defaultDbPath() {
-    return configDir() + "/ab.db";
+    return platform::pathToUtf8(platform::configDir() / "ab.db");
 }
 
 static std::string defaultIniPath() {
-    return configDir() + "/imgui.ini";
+    return platform::pathToUtf8(platform::configDir() / "imgui.ini");
 }
 
 // Index of the monitor containing the center of `window`, or -1.
+#if !defined(__ANDROID__)
 static int windowMonitorIndex(GLFWwindow* window) {
     if (!window) {
         return -1;
@@ -114,14 +185,28 @@ static int windowMonitorIndex(GLFWwindow* window) {
     }
     return -1;
 }
+#endif
 
 Application::Application() = default;
 
 Application::~Application() = default;
 
 bool Application::init() {
+#if defined(__ANDROID__)
+    return false;
+#else
+    if (!initCore()) {
+        return false;
+    }
+    return initGraphics();
+#endif
+}
+
+bool Application::initCore() {
+
     // Load settings from DB before creating the window.
-    fs::create_directories(configDir());
+    std::error_code dirEc;
+    fs::create_directories(platform::configDir(), dirEc);
     if (!m_database.open(defaultDbPath())) {
         std::fprintf(stderr, "Failed to open database: %s\n",
                      m_database.lastError().c_str());
@@ -133,25 +218,52 @@ bool Application::init() {
     m_project.setRootPath(m_settings.lastProjectPath);
     m_reopenRoot = m_settings.lastProjectPath;
 
+    m_notes.setStorage(m_storage);
+    m_images.setStorage(m_storage);
+    m_notes.rescan(platform::pathFromUtf8(m_project.rootPath()));
+    m_images.rescan(platform::pathFromUtf8(m_settings.lastImagesPath));
+    m_initiative.load(m_database);
+
+    // Register dock-able panels for the layout manager.
+    m_layout.registerWindow("Notes");
+    m_layout.registerWindow("Initiative");
+    m_layout.registerWindow("Projection");
+
+    // Default new-note name.
+    std::snprintf(m_newNoteName, sizeof(m_newNoteName), "New Note.md");
+    return true;
+}
+
+#if defined(__ANDROID__)
+bool Application::initGraphics() {
+    return false;
+}
+#else
+bool Application::initGraphics() {
     glfwSetErrorCallback(glfwErrorCallback);
 
+#if defined(__linux__) && !defined(__ANDROID__)
     // On Wayland, GLFW blocks in the frame-callback during vsync when the
     // window is occluded (e.g. switching desktops on a tiling compositor),
     // which the compositor then reports as "application not responding".
     // Prefer X11/XWayland by default; allow opting back into Wayland via
     // the AB_GLFW_PLATFORM environment variable ("wayland" or "x11").
     {
-        const char* platform = std::getenv("AB_GLFW_PLATFORM");
-        bool useWayland = (platform && std::strcmp(platform, "wayland") == 0);
+        const char* platformHint = std::getenv("AB_GLFW_PLATFORM");
+        bool useWayland =
+            (platformHint && std::strcmp(platformHint, "wayland") == 0);
         if (useWayland) {
             glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_WAYLAND);
         } else {
             glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
         }
     }
+#endif
     if (!glfwInit()) {
+#if defined(__linux__) && !defined(__ANDROID__)
         // If X11 was unavailable, retry with automatic platform selection.
         glfwInitHint(GLFW_PLATFORM, GLFW_ANY_PLATFORM);
+#endif
         if (!glfwInit()) {
             return false;
         }
@@ -187,7 +299,7 @@ bool Application::init() {
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable |
                       ImGuiConfigFlags_NavEnableKeyboard;
     m_iniPath = defaultIniPath();
-    m_needsDefaultLayout = !fs::exists(m_iniPath);
+    m_needsDefaultLayout = !fs::exists(platform::pathFromUtf8(m_iniPath));
     io.IniFilename = m_iniPath.c_str();
 
     // Scale style/font a little larger for readability.
@@ -195,15 +307,6 @@ bool Application::init() {
 
     ImGui_ImplGlfw_InitForOpenGL(static_cast<GLFWwindow*>(m_window), true);
     ImGui_ImplOpenGL3_Init("#version 330");
-
-    m_notes.rescan(m_project.rootPath());
-    m_images.rescan(m_settings.lastImagesPath);
-    m_initiative.load(m_database);
-
-    // Register dock-able panels for the layout manager.
-    m_layout.registerWindow("Notes");
-    m_layout.registerWindow("Initiative");
-    m_layout.registerWindow("Projection");
 
     // Default projection target: a monitor other than the one hosting the app
     // (avoid covering the window the user is working in).
@@ -217,22 +320,25 @@ bool Application::init() {
         }
     }
 
-    // Default new-note name.
-    std::snprintf(m_newNoteName, sizeof(m_newNoteName), "New Note.md");
     return true;
 }
+#endif
 
 void Application::saveWindowState() {
-    GLFWwindow* window = static_cast<GLFWwindow*>(m_window);
-    int w = 0;
-    int h = 0;
-    glfwGetWindowSize(window, &w, &h);
-    if (w > 0 && h > 0) {
-        m_settings.windowWidth = w;
-        m_settings.windowHeight = h;
+#if !defined(__ANDROID__)
+    if (m_window) {
+        GLFWwindow* window = static_cast<GLFWwindow*>(m_window);
+        int w = 0;
+        int h = 0;
+        glfwGetWindowSize(window, &w, &h);
+        if (w > 0 && h > 0) {
+            m_settings.windowWidth = w;
+            m_settings.windowHeight = h;
+        }
     }
+#endif
     m_settings.lastProjectPath = m_project.rootPath();
-    m_settings.lastImagesPath = m_images.root().string();
+    m_settings.lastImagesPath = platform::pathToUtf8(m_images.root());
     m_settings.save(m_database);
     if (m_initiativeDirty) {
         m_initiative.save(m_database);
@@ -241,7 +347,14 @@ void Application::saveWindowState() {
 
 void Application::shutdown() {
     saveWindowState();
+    shutdownGraphics();
+    shutdownCore();
+}
 
+void Application::shutdownGraphics() {
+#if defined(__ANDROID__)
+    // Android graphics lifetime is owned by the Android host.
+#else
     // Make sure GL resources are torn down in the main context.
     if (m_window) {
         glfwMakeContextCurrent(static_cast<GLFWwindow*>(m_window));
@@ -256,18 +369,25 @@ void Application::shutdown() {
         glfwDestroyWindow(static_cast<GLFWwindow*>(m_window));
     }
     glfwTerminate();
+#endif
+}
+
+void Application::shutdownCore() {
+    m_database.close();
 }
 
 void Application::openNotesFolder(const fs::path& path) {
     if (path.empty()) {
         return;
     }
-    m_project.setRootPath(path.string());
+    m_project.setRootPath(platform::pathToUtf8(path));
     m_notes.rescan(path);
-    m_reopenRoot = path.string();
+    m_reopenRoot = platform::pathToUtf8(path);
     m_selectedPath.clear();
     m_editorBuffer.clear();
     m_editorDirty = false;
+    m_wrapPending = false;
+    m_autoListPending = false;
 }
 
 void Application::closeNotesFolder() {
@@ -277,6 +397,8 @@ void Application::closeNotesFolder() {
     m_selectedPath.clear();
     m_editorBuffer.clear();
     m_editorDirty = false;
+    m_wrapPending = false;
+    m_autoListPending = false;
 }
 
 void Application::openImagesFolder(const fs::path& path) {
@@ -292,10 +414,12 @@ void Application::selectNote(const std::string& relativePath) {
         return;
     }
     m_selectedPath = relativePath;
-    if (!m_notes.read(relativePath, m_editorBuffer)) {
+    if (!m_notes.read(platform::pathFromUtf8(relativePath), m_editorBuffer)) {
         m_editorBuffer.clear();
     }
     m_editorDirty = false;
+    m_wrapPending = false;
+    m_autoListPending = false;
 }
 
 void Application::requestOpenNote(const std::string& relativePath) {
@@ -314,22 +438,27 @@ void Application::requestOpenNote(const std::string& relativePath) {
 void Application::beginRename(const std::string& relativePath) {
     m_renameTarget = relativePath;
     std::snprintf(m_renameName, sizeof(m_renameName), "%s",
-                  fs::path(relativePath).filename().string().c_str());
+                  platform::pathToUtf8(
+                      platform::pathFromUtf8(relativePath).filename())
+                      .c_str());
     m_renameOpen = true;
 }
 
 void Application::doRename() {
     std::string name = m_renameName;
     m_renameOpen = false;
-    if (name.empty() || fs::path(m_renameTarget).filename() == name) {
+    if (name.empty() ||
+        platform::pathFromUtf8(m_renameTarget).filename() ==
+            platform::pathFromUtf8(name)) {
         return;
     }
-    fs::path parent = fs::path(m_renameTarget).parent_path();
-    fs::path newRel = parent / name;
-    if (m_notes.rename(m_renameTarget, newRel.string())) {
+    fs::path parent = platform::pathFromUtf8(m_renameTarget).parent_path();
+    fs::path newRel = parent / platform::pathFromUtf8(name);
+    if (m_notes.rename(platform::pathFromUtf8(m_renameTarget),
+                       newRel)) {
         m_notes.rescan(m_notes.root());
         if (m_selectedPath == m_renameTarget) {
-            m_selectedPath = newRel.string();
+            m_selectedPath = platform::pathToUtf8(newRel);
         }
     }
 }
@@ -341,7 +470,7 @@ void Application::beginDelete(const std::string& relativePath) {
 
 void Application::doDelete() {
     m_deleteOpen = false;
-    if (m_notes.remove(m_deleteTarget)) {
+    if (m_notes.remove(platform::pathFromUtf8(m_deleteTarget))) {
         m_notes.rescan(m_notes.root());
         if (m_selectedPath == m_deleteTarget) {
             m_selectedPath.clear();
@@ -357,7 +486,11 @@ void Application::requestQuit() {
         m_pendingOpen.clear();
         m_quitRequested = true;
     } else {
+#if defined(__ANDROID__)
+        // Android lifecycle is owned by the host.
+#else
         glfwSetWindowShouldClose(static_cast<GLFWwindow*>(m_window), GLFW_TRUE);
+#endif
     }
 }
 
@@ -575,14 +708,19 @@ void Application::wrapEditorSelection(const char* before, const char* after) {
 }
 
 void Application::saveSettingsNow() {
+#if defined(__ANDROID__)
+    int w = m_settings.windowWidth;
+    int h = m_settings.windowHeight;
+#else
     GLFWwindow* window = static_cast<GLFWwindow*>(m_window);
     int w = 0;
     int h = 0;
     glfwGetWindowSize(window, &w, &h);
     m_settings.windowWidth = w;
     m_settings.windowHeight = h;
+#endif
     m_settings.lastProjectPath = m_project.rootPath();
-    m_settings.lastImagesPath = m_images.root().string();
+    m_settings.lastImagesPath = platform::pathToUtf8(m_images.root());
     m_settings.save(m_database);
     m_savedW = w;
     m_savedH = h;
@@ -601,10 +739,10 @@ void Application::createNewNote() {
     std::string name = m_newNoteName;
     if (name.empty()) {
         name = "New Note.md";
-    } else if (fs::path(name).extension() != ".md") {
+    } else if (platform::pathFromUtf8(name).extension() != ".md") {
         name += ".md";
     }
-    if (m_notes.create(name)) {
+    if (m_notes.create(platform::pathFromUtf8(name))) {
         m_notes.rescan(m_notes.root());
         selectNote(name);
     }
@@ -625,8 +763,8 @@ static void drawTree(const fs::path& dir, NoteManager& notes,
     }
 
     for (const auto& e : entries) {
-        std::string label = e.path.filename().string();
-        std::string rel = e.path.string();
+        std::string label = platform::pathToUtf8(e.path.filename());
+        std::string rel = platform::pathToUtf8(e.path);
 
         ImGui::PushID(rel.c_str());
 
@@ -745,7 +883,8 @@ void Application::drawNotesPanel() {
         ImGui::BeginDisabled();
     }
     if (ImGui::Button("Save")) {
-        if (m_notes.write(m_selectedPath, m_editorBuffer)) {
+        if (m_notes.write(platform::pathFromUtf8(m_selectedPath),
+                      m_editorBuffer)) {
             m_editorDirty = false;
         }
     }
@@ -857,13 +996,26 @@ void Application::drawNotesPanel() {
         ImGui::BeginChild("editor", ImVec2(0, editorH), ImGuiChildFlags_Borders);
         const ImGuiID srcId = ImGui::GetID("##src");
 
-        // Apply a pending formatting wrap: re-sync ImGui's internal buffer with
-        // the edited text and hand focus back to the editor.
-        if (m_wrapPending) {
+        // Apply a pending formatting wrap or auto-inserted list marker:
+        // re-sync ImGui's internal buffer with the edited text and hand focus
+        // back to the editor.
+        if (m_wrapPending || m_autoListPending) {
             if (ImGuiInputTextState* st = ImGui::GetInputTextState(srcId)) {
                 st->ReloadUserBufAndKeepSelection();
             }
             ImGui::SetKeyboardFocusHere(0);
+        }
+
+        // Detect Enter before InputText handles it; used to continue lists.
+        bool enterPressed = false;
+        if (!m_wrapPending && !m_autoListPending) {
+            const ImGuiIO& io = ImGui::GetIO();
+            if (ImGui::GetInputTextState(srcId)) {
+                enterPressed =
+                    !io.KeyShift && !io.KeyCtrl && !io.KeyAlt &&
+                    (ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
+                     ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false));
+            }
         }
 
         size_t cap = m_editorBuffer.size() + 1024;
@@ -880,7 +1032,7 @@ void Application::drawNotesPanel() {
         m_editorBuffer.resize(std::strlen(m_editorBuffer.c_str()));
 
         // Track selection/cursor for the next formatting operation, and restore
-        // the pending selection after a wrap.
+        // the pending selection after a wrap or list continuation.
         if (ImGuiInputTextState* st = ImGui::GetInputTextState(srcId)) {
             m_editorSelStart = st->GetSelectionStart();
             m_editorSelEnd = st->GetSelectionEnd();
@@ -891,6 +1043,11 @@ void Application::drawNotesPanel() {
                 m_editorSelStart = m_wrapSelStart;
                 m_editorSelEnd = m_wrapSelEnd;
                 m_wrapPending = false;
+            } else if (m_autoListPending) {
+                st->SetSelection(m_autoListSel, m_autoListSel);
+                m_editorSelStart = m_autoListSel;
+                m_editorSelEnd = m_autoListSel;
+                m_autoListPending = false;
             }
         } else {
             m_editorSelStart = (m_wrapPending) ? m_wrapSelStart : -1;
@@ -898,14 +1055,46 @@ void Application::drawNotesPanel() {
             if (m_wrapPending) {
                 m_wrapPending = false;
             }
+            m_autoListPending = false;
+        }
+
+        // Auto-continue Markdown lists: pressing Enter after a "1. item" or
+        // "- item" line inserts the next marker, preserving indentation and
+        // incrementing ordered numbering.
+        if (enterPressed) {
+            if (ImGuiInputTextState* st = ImGui::GetInputTextState(srcId)) {
+                const int cursor = st->GetCursorPos();
+                if (cursor > 0 && cursor <= static_cast<int>(m_editorBuffer.size()) &&
+                    m_editorBuffer[cursor - 1] == '\n') {
+                    const int lineEnd = cursor - 1;
+                    int lineStart = lineEnd;
+                    while (lineStart > 0 &&
+                           m_editorBuffer[lineStart - 1] != '\n') {
+                        --lineStart;
+                    }
+                    const std::string prevLine =
+                        m_editorBuffer.substr(lineStart, lineEnd - lineStart);
+                    std::string prefix;
+                    if (nextListItemPrefix(prevLine, prefix)) {
+                        m_editorBuffer.insert(static_cast<size_t>(cursor),
+                                              prefix);
+                        m_autoListPending = true;
+                        m_autoListSel =
+                            cursor + static_cast<int>(prefix.size());
+                        m_editorDirty = true;
+                    }
+                }
+            }
         }
         ImGui::EndChild();
     }
 
     if (m_notesPreviewOpen) {
         ImGui::BeginChild("preview", ImVec2(0, previewH), ImGuiChildFlags_Borders);
-        MarkdownRenderer::render(m_editorBuffer,
-                                 m_notes.absolute(m_selectedPath).parent_path());
+        MarkdownRenderer::render(
+            m_editorBuffer,
+            m_storage.parent(
+                m_notes.absolute(platform::pathFromUtf8(m_selectedPath))), m_storage);
         ImGui::EndChild();
     }
 
@@ -921,14 +1110,16 @@ void Application::drawProjectionPanel() {
     ImGui::Begin("Projection");
 
     // Images folder.
+    const std::string imagesRoot = platform::pathToUtf8(m_images.root());
     ImGui::TextDisabled("Folder: %s",
                         m_images.root().empty() ? "(none)"
-                                                : m_images.root().c_str());
+                                                : imagesRoot.c_str());
     if (ImGui::Button("Open folder...")) {
         m_pickerTitle = "Choose images folder";
         m_pickerTarget = 1;
-        m_pickerCurrent = m_images.root().empty() ? homeDir()
-                                                  : m_images.root().string();
+        m_pickerCurrent = m_images.root().empty()
+                              ? homeDir()
+                              : platform::pathToUtf8(m_images.root());
         m_pickerOpen = true;
     }
     ImGui::SameLine();
@@ -938,6 +1129,9 @@ void Application::drawProjectionPanel() {
     }
 
     // Monitor + open/close + blackout.
+#if defined(__ANDROID__)
+    ImGui::TextDisabled("External display projection is not available yet.");
+#else
     int monitorCount = 0;
     GLFWmonitor** monitors = glfwGetMonitors(&monitorCount);
     ImGui::Text("Monitor:");
@@ -963,6 +1157,7 @@ void Application::drawProjectionPanel() {
         }
         ImGui::EndCombo();
     }
+#endif
 
     ImGui::SameLine();
     if (m_projection.isOpen()) {
@@ -1046,7 +1241,7 @@ void Application::drawProjectionPanel() {
     while (idx < count) {
         for (int c = 0; c < cols && idx < count; ++c, ++idx) {
             const fs::path& p = images[idx];
-            std::string label = p.filename().string();
+            std::string label = platform::pathToUtf8(p.filename());
 
             ImGui::PushID(idx);
             bool sel = (idx == m_selectedImage);
@@ -1071,7 +1266,9 @@ void Application::drawProjectionPanel() {
 
     // Selected image controls.
     if (m_selectedImage >= 0 && m_selectedImage < static_cast<int>(images.size())) {
-        ImGui::TextUnformatted(images[m_selectedImage].filename().c_str());
+        const std::string selectedName =
+            platform::pathToUtf8(images[m_selectedImage].filename());
+        ImGui::TextUnformatted(selectedName.c_str());
         ImGui::SameLine();
         if (ImGui::Button("Project")) {
             m_showingImage = m_images.load(images[m_selectedImage]);
@@ -1275,13 +1472,14 @@ bool Application::drawFolderPicker(const char* title, std::string& out) {
         ImGui::TextUnformatted(m_pickerCurrent.c_str());
         ImGui::Separator();
 
-        fs::path cur(m_pickerCurrent);
+        fs::path cur = platform::pathFromUtf8(m_pickerCurrent);
         if (cur.has_parent_path() && cur != cur.root_path()) {
             if (ImGui::Selectable("  ..")) {
-                m_pickerCurrent = cur.parent_path().string();
+                m_pickerCurrent = platform::pathToUtf8(cur.parent_path());
             }
         }
 
+        const std::vector<fs::path> roots = platform::rootLocations();
         std::vector<fs::path> dirs;
         std::error_code ec;
         for (auto it = fs::directory_iterator(cur, ec);
@@ -1302,10 +1500,21 @@ bool Application::drawFolderPicker(const char* title, std::string& out) {
         std::sort(dirs.begin(), dirs.end());
 
         if (ImGui::BeginChild("picker_dirs", ImVec2(420, 320), true)) {
+            if (!roots.empty()) {
+                for (const auto& root : roots) {
+                    const std::string label =
+                        "  " + platform::pathToUtf8(root);
+                    if (ImGui::Selectable(label.c_str())) {
+                        m_pickerCurrent = platform::pathToUtf8(root);
+                    }
+                }
+                ImGui::Separator();
+            }
             for (const auto& d : dirs) {
-                std::string label = "  " + d.filename().string();
+                std::string label =
+                    "  " + platform::pathToUtf8(d.filename());
                 if (ImGui::Selectable(label.c_str())) {
-                    m_pickerCurrent = d.string();
+                    m_pickerCurrent = platform::pathToUtf8(d);
                 }
             }
         }
@@ -1430,7 +1639,10 @@ void Application::draw() {
         ImGui::OpenPopup("Delete note");
         if (ImGui::BeginPopupModal("Delete note", &m_deleteOpen,
                                    ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::Text("Delete \"%s\"?", fs::path(m_deleteTarget).filename().string().c_str());
+            ImGui::Text("Delete \"%s\"?",
+                        platform::pathToUtf8(
+                            platform::pathFromUtf8(m_deleteTarget).filename())
+                            .c_str());
             if (ImGui::Button("Delete")) {
                 doDelete();
             }
@@ -1451,14 +1663,21 @@ void Application::draw() {
         if (ImGui::BeginPopupModal("Unsaved changes", nullptr,
                                    ImGuiWindowFlags_AlwaysAutoResize)) {
             ImGui::Text("Save changes to \"%s\"?",
-                        fs::path(m_selectedPath).filename().string().c_str());
+                        platform::pathToUtf8(
+                            platform::pathFromUtf8(m_selectedPath).filename())
+                            .c_str());
             if (ImGui::Button("Save")) {
-                m_notes.write(m_selectedPath, m_editorBuffer);
+                m_notes.write(platform::pathFromUtf8(m_selectedPath),
+                      m_editorBuffer);
                 m_editorDirty = false;
                 m_promptUnsaved = false;
                 if (m_quitRequested) {
+#if defined(__ANDROID__)
+                    // Android lifecycle is owned by the host.
+#else
                     glfwSetWindowShouldClose(
                         static_cast<GLFWwindow*>(m_window), GLFW_TRUE);
+#endif
                 } else if (!m_pendingOpen.empty()) {
                     selectNote(m_pendingOpen);
                 }
@@ -1468,8 +1687,12 @@ void Application::draw() {
                 m_editorDirty = false;
                 m_promptUnsaved = false;
                 if (m_quitRequested) {
+#if defined(__ANDROID__)
+                    // Android lifecycle is owned by the host.
+#else
                     glfwSetWindowShouldClose(
                         static_cast<GLFWwindow*>(m_window), GLFW_TRUE);
+#endif
                 } else if (!m_pendingOpen.empty()) {
                     selectNote(m_pendingOpen);
                 }
@@ -1497,12 +1720,15 @@ void Application::draw() {
         !ImGui::GetIO().WantTextInput &&
         ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
         m_projection.close();
+#if !defined(__ANDROID__)
         glfwFocusWindow(static_cast<GLFWwindow*>(m_window));
+#endif
     }
 
     ImGui::End();  // ##HostWindow
 }
 
+#if !defined(__ANDROID__)
 void Application::newFrame() {
     glfwPollEvents();
 
@@ -1567,5 +1793,159 @@ int Application::run() {
     shutdown();
     return 0;
 }
+#endif
+
+
+#if defined(__ANDROID__)
+namespace {
+EGLDisplay g_eglDisplay = EGL_NO_DISPLAY;
+EGLContext g_eglContext = EGL_NO_CONTEXT;
+EGLSurface g_eglSurface = EGL_NO_SURFACE;
+ANativeWindow* g_nativeWindow = nullptr;
+}  // namespace
+
+bool Application::initAndroid(void* nativeWindow) {
+    if (!m_database.isOpen() && !initCore()) {
+        return false;
+    }
+
+    std::error_code dirEc;
+    const fs::path notesRoot =
+        platform::pathFromUtf8(m_project.rootPath());
+    if (m_project.rootPath().empty() ||
+        !fs::is_directory(notesRoot, dirEc)) {
+        const fs::path notesDir = platform::configDir() / "notes";
+        fs::create_directories(notesDir, dirEc);
+        openNotesFolder(notesDir);
+    }
+    if (m_images.root().empty() ||
+        !fs::is_directory(m_images.root(), dirEc)) {
+        const fs::path imagesDir = platform::configDir() / "images";
+        fs::create_directories(imagesDir, dirEc);
+        openImagesFolder(imagesDir);
+    }
+
+    if (g_eglDisplay != EGL_NO_DISPLAY) {
+        return true;
+    }
+    if (!nativeWindow) {
+        return false;
+    }
+    g_nativeWindow = static_cast<ANativeWindow*>(nativeWindow);
+    ANativeWindow_acquire(g_nativeWindow);
+
+    g_eglDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (g_eglDisplay == EGL_NO_DISPLAY) {
+        return false;
+    }
+    if (eglInitialize(g_eglDisplay, nullptr, nullptr) != EGL_TRUE) {
+        return false;
+    }
+
+    const EGLint configAttrs[] = {
+        EGL_BLUE_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_RED_SIZE, 8,
+        EGL_DEPTH_SIZE, 24, EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_NONE};
+    EGLint configCount = 0;
+    if (eglChooseConfig(g_eglDisplay, configAttrs, nullptr, 0,
+                        &configCount) != EGL_TRUE ||
+        configCount == 0) {
+        return false;
+    }
+    EGLConfig config = nullptr;
+    eglChooseConfig(g_eglDisplay, configAttrs, &config, 1, &configCount);
+    EGLint visual = 0;
+    eglGetConfigAttrib(g_eglDisplay, config, EGL_NATIVE_VISUAL_ID, &visual);
+    ANativeWindow_setBuffersGeometry(g_nativeWindow, 0, 0, visual);
+
+    const EGLint contextAttrs[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
+    g_eglContext =
+        eglCreateContext(g_eglDisplay, config, EGL_NO_CONTEXT, contextAttrs);
+    if (g_eglContext == EGL_NO_CONTEXT) {
+        return false;
+    }
+    g_eglSurface = eglCreateWindowSurface(
+        g_eglDisplay, config,
+        reinterpret_cast<EGLNativeWindowType>(g_nativeWindow), nullptr);
+    if (g_eglSurface == EGL_NO_SURFACE) {
+        return false;
+    }
+    if (eglMakeCurrent(g_eglDisplay, g_eglSurface, g_eglSurface,
+                       g_eglContext) != EGL_TRUE) {
+        return false;
+    }
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::StyleColorsDark();
+    ImGuiIO& io = ImGui::GetIO();
+    applyTheme(m_settings.theme);
+    loadFonts(io);
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable |
+                      ImGuiConfigFlags_NavEnableKeyboard;
+    m_iniPath = defaultIniPath();
+    m_needsDefaultLayout = !fs::exists(platform::pathFromUtf8(m_iniPath));
+    io.IniFilename = m_iniPath.c_str();
+    ImGui::GetStyle().ScaleAllSizes(2.0f);
+    ImGui::GetStyle().FontScaleDpi = 2.0f;
+
+    ImGui_ImplAndroid_Init(g_nativeWindow);
+    ImGui_ImplOpenGL3_Init("#version 300 es");
+    return true;
+}
+
+void Application::frameAndroid() {
+    if (g_eglDisplay == EGL_NO_DISPLAY || g_eglSurface == EGL_NO_SURFACE) {
+        return;
+    }
+
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplAndroid_NewFrame();
+    ImGui::NewFrame();
+
+    draw();
+    ImGui::Render();
+
+    EGLint width = 0;
+    EGLint height = 0;
+    eglQuerySurface(g_eglDisplay, g_eglSurface, EGL_WIDTH, &width);
+    eglQuerySurface(g_eglDisplay, g_eglSurface, EGL_HEIGHT, &height);
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+    glViewport(0, 0, width, height);
+    const ImVec4 bg = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
+    glClearColor(bg.x, bg.y, bg.z, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    eglSwapBuffers(g_eglDisplay, g_eglSurface);
+}
+
+void Application::shutdownAndroid() {
+    saveWindowState();
+    if (ImGui::GetCurrentContext()) {
+        ImGui_ImplOpenGL3_Shutdown();
+        ImGui_ImplAndroid_Shutdown();
+        ImGui::DestroyContext();
+    }
+    if (g_eglDisplay != EGL_NO_DISPLAY) {
+        eglMakeCurrent(g_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE,
+                       EGL_NO_CONTEXT);
+        if (g_eglSurface != EGL_NO_SURFACE) {
+            eglDestroySurface(g_eglDisplay, g_eglSurface);
+        }
+        if (g_eglContext != EGL_NO_CONTEXT) {
+            eglDestroyContext(g_eglDisplay, g_eglContext);
+        }
+        eglTerminate(g_eglDisplay);
+    }
+    g_eglDisplay = EGL_NO_DISPLAY;
+    g_eglContext = EGL_NO_CONTEXT;
+    g_eglSurface = EGL_NO_SURFACE;
+    if (g_nativeWindow) {
+        ANativeWindow_release(g_nativeWindow);
+        g_nativeWindow = nullptr;
+    }
+}
+#endif
 
 }  // namespace ab

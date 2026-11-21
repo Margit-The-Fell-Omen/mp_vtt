@@ -1,10 +1,13 @@
 #include "projection/ImageStore.h"
 
+#include "platform/Platform.h"
+
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
 #include <algorithm>
 #include <cctype>
+#include <vector>
 
 namespace ab {
 
@@ -20,21 +23,18 @@ void ImageStore::rescan(const fs::path& folder) {
     m_root = folder;
     m_images.clear();
 
-    if (folder.empty() || !fs::exists(folder) || !fs::is_directory(folder)) {
+    if (folder.empty() || !m_storage) {
         return;
     }
 
-    std::error_code ec;
-    for (const auto& entry :
-         fs::directory_iterator(folder, fs::directory_options::skip_permission_denied, ec)) {
-        if (ec) {
-            ec.clear();
-            continue;
+    std::vector<Storage::Item> items;
+    if (!m_storage->scanFlat(folder, items)) {
+        return;
+    }
+    for (const auto& item : items) {
+        if (isImageFile(fs::path(item.name))) {
+            m_images.push_back(item.location);
         }
-        if (entry.is_regular_file(ec) && !ec && isImageFile(entry.path())) {
-            m_images.push_back(entry.path());
-        }
-        ec.clear();
     }
 
     std::sort(m_images.begin(), m_images.end());
@@ -43,16 +43,22 @@ void ImageStore::rescan(const fs::path& folder) {
 std::shared_ptr<Image> ImageStore::load(const fs::path& path) {
     stbi_set_flip_vertically_on_load(1);
 
+    std::vector<unsigned char> bytes;
+    if (!m_storage || !m_storage->readBytes(path, bytes) || bytes.empty()) {
+        return nullptr;
+    }
+
     int w = 0;
     int h = 0;
     int channels = 0;
-    stbi_uc* data = stbi_load(path.string().c_str(), &w, &h, &channels, 4);
+    stbi_uc* data = stbi_load_from_memory(
+        bytes.data(), static_cast<int>(bytes.size()), &w, &h, &channels, 4);
     if (!data) {
         return nullptr;
     }
 
     auto img = std::make_shared<Image>();
-    img->path = path.string();
+    img->path = platform::pathToUtf8(path);
     img->width = w;
     img->height = h;
     img->pixels.assign(data, data + static_cast<size_t>(w) * h * 4);

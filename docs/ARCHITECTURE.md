@@ -9,6 +9,41 @@ The design goal is a small, explicit codebase: one coordinator object owns the
 long-lived services, services expose plain C++ APIs, and UI code is drawn
 immediately from `Application`'s panel methods.
 
+## Platform status and seams
+
+Linux is the validated runtime platform. Windows build support is implemented
+but not yet validated on hardware. Android builds a debug APK with a
+NativeActivity/EGL host but is not runtime-validated yet. The
+[CROSS_PLATFORM.md](CROSS_PLATFORM.md) plan keeps `Application` and the services
+shared and moves platform concerns behind narrow interfaces.
+
+Implemented seams:
+
+- `src/core/Storage.h` defines backend-neutral file operations;
+  `src/platform/desktop/DesktopStorage` implements them with `std::filesystem`.
+  NoteManager, ImageStore, and MarkdownRenderer use the interface.
+- `ProjectionRenderer` owns the image/hint shaders and GL objects for both
+  desktop GL and Android GLES3; `ProjectionWindow` owns the desktop window,
+  context, callbacks, and monitor hints.
+- `src/platform/Platform.h` owns home/config directories, URL opening, UTF-8
+  path conversion, Windows drive roots, and byte reads.
+- `src/platform/GL.h` selects glad on desktop and GLES3 headers on Android.
+- `Application` has `initCore()` / `initGraphics()` and `shutdownGraphics()` /
+  `shutdownCore()` so core state can outlive a graphics context.
+- Fonts are bundled under `assets/fonts/` and loaded from memory-independent
+  files; fontconfig is only a fallback.
+
+Android host status:
+
+- `src/platform/android/android_main.cpp` implements NativeActivity, EGL,
+  ImGui Android input, soft keyboard/Unicode JNI, and app lifecycle.
+- `ProjectionWindowAndroid.cpp` is a stub; `Presentation` projection is pending.
+- Notes/images default to app-private `notes/` and `images/` directories.
+- SAF folder picking and full device validation are still pending.
+
+References to GLFW, X11, fontconfig, and `~/.adventureboard` below describe the
+current desktop implementation.
+
 ## High-level overview
 
 ```text
@@ -56,37 +91,61 @@ src/
     Database.{h,cpp}       SQLite connection + schema + query helpers
     Settings.{h,cpp}       persisted settings
     Project.h              notes root path
+    Storage.h              backend-neutral file operations
   notes/
     NoteManager.{h,cpp}    folder scan, read/write/create/rename/remove
     MarkdownRenderer.{h,cpp} markdown -> ImGui, inline image cache
   initiative/
     InitiativeTracker.{h,cpp} encounter model + persistence
     Participant.h             participant data
+  platform/
+    Platform.{h,cpp}       config dir, URL open, path conversion, roots
+    GL.h                   glad (desktop) / GLES3 (Android) includes
+    desktop/
+      DesktopStorage.{h,cpp} std::filesystem implementation
+    android/
+      android_main.cpp     NativeActivity + EGL + soft keyboard host
+      ProjectionWindowAndroid.cpp  projection stub (Presentation pending)
   projection/
     ImageStore.{h,cpp}     image folder scan + stb_image decoding
-    ProjectionWindow.{h,cpp} separate fullscreen window, GL rendering,
-                              presentation transforms, monitor targeting
+    ProjectionRenderer.{h,cpp} shared image quad, transforms, hint text
+    ProjectionWindow.{h,cpp} separate fullscreen GLFW window, callbacks,
+                              monitor targeting
 
+assets/fonts/  bundled Liberation Sans/Mono + license
 third_party/
   glad/        vendored OpenGL loader
   imgui_md/    vendored ImGui markdown renderer (MD4C-backed)
 ```
 
+The Android Gradle project lives in `android/` and builds the shared library
+with the NDK. SAF storage and Presentation projection are still pending.
+
 ## Application lifecycle
 
-`Application::init()` performs, in order:
+`Application::init()` calls `initCore()` and then `initGraphics()`, so the
+database and services can be created without a graphics context.
 
-1. Create `~/.adventureboard/` and open the SQLite database.
+`initCore()`:
+
+1. Create the config directory and open the SQLite database. On Android this is
+   the app's `internalDataPath`, set by the NativeActivity host.
 2. Ensure the schema and load persisted `Settings`.
-3. Select the GLFW platform: X11 by default, Wayland via
+3. Restore the notes/images roots and wire the services to `DesktopStorage`.
+4. Rescan the notes/images folders and load the initiative encounter.
+5. Register the dockable panels with `LayoutManager`.
+6. Set the default new-note name.
+
+`initGraphics()`:
+
+1. Select the GLFW platform on Linux: X11 by default, Wayland via
    `AB_GLFW_PLATFORM=wayland`; fall back to GLFW's automatic choice.
-4. Create the main window (OpenGL 3.3 core), load glad, create the ImGui
-   context, apply the saved theme, load fonts, enable docking + keyboard nav.
-5. Point ImGui at `~/.adventureboard/imgui.ini`.
-6. Initialize the GLFW/OpenGL ImGui backends.
-7. Rescan the notes/images folders and load the initiative encounter.
-8. Register the dockable panels with `LayoutManager`.
-9. Pick a default projection monitor (a monitor other than the app window's).
+2. Create the main window (OpenGL 3.3 core), load glad, create the ImGui
+   context, apply the saved theme, load the bundled fonts, and enable docking +
+   keyboard nav.
+3. Point ImGui at `~/.adventureboard/imgui.ini`.
+4. Initialize the GLFW/OpenGL ImGui backends.
+5. Pick a default projection monitor (a monitor other than the app window's).
 
 The frame loop in `newFrame()`:
 
@@ -98,8 +157,15 @@ The frame loop in `newFrame()`:
 6. Throttled window-size autosave.
 7. `ProjectionWindow::render()` using the projection's own context.
 
-`shutdown()` saves window/settings/initiative state, restores the main context,
-closes the projection, and shuts down the ImGui backends and GLFW.
+`shutdown()` saves window/settings/initiative state, then calls
+`shutdownGraphics()` (restore the main context, close the projection, shut down
+ImGui backends and GLFW) and `shutdownCore()` (close the database).
+
+On Android, `android_main.cpp` calls `initAndroid()` on `APP_CMD_INIT_WINDOW`,
+`frameAndroid()` for each frame, and `shutdownAndroid()` on
+`APP_CMD_TERM_WINDOW`. Core state survives surface recreation. App-private
+`notes/` and `images/` directories are created on first launch until SAF
+storage lands.
 
 ## UI architecture
 
@@ -129,9 +195,10 @@ before panels are drawn, so dock changes take effect in the same frame.
 
 ## Notes subsystem
 
-`NoteManager` scans the notes root recursively (skipping permission errors) and
-stores a flat, sorted list of directories and `.md` files. Paths are stored
-relative to the root; absolute paths are derived on demand.
+`NoteManager` scans the notes root recursively through `Storage` (skipping
+permission errors on desktop) and stores a flat, sorted list of directories and
+`.md` files. Paths are stored relative to the root; opaque absolute locations
+are derived through `Storage::join()` on demand.
 
 `Application` keeps:
 
@@ -145,8 +212,9 @@ a pending selection. Saving writes through `NoteManager::write`.
 
 Preview uses `MarkdownRenderer::render()`, which is a thin wrapper around the
 vendored `imgui_md` renderer and MD4C. Relative images resolve against the
-note's parent directory and are uploaded once into a process-wide GL texture
-cache keyed by absolute path. External URLs are currently ignored.
+note's parent location through `Storage` and are uploaded once into a
+process-wide GL texture cache keyed by the opaque location. External URLs open
+through `platform::openUrl()`.
 
 Folder handling: "Open folder..." and "Close folder" clear/load the project
 root, tree, selection, and editor. The last closed path is remembered for quick
@@ -156,9 +224,9 @@ closed, so a closed folder stays closed across restarts.
 ## Projection subsystem
 
 `ImageStore` scans a flat image folder (`.png`, `.jpg`, `.jpeg`, `.bmp`,
-`.tga`, `.gif`), decodes with `stb_image` (vertical flip enabled so texture
-`v=0` is the image bottom), and returns `std::shared_ptr<Image>` holding RGBA8
-pixels.
+`.tga`, `.gif`) through `Storage`, decodes with `stb_image` from an in-memory
+byte buffer (vertical flip enabled so texture `v=0` is the image bottom), and
+returns a `std::shared_ptr<Image>` holding RGBA8 pixels.
 
 `ProjectionWindow` owns a **second GLFW window and OpenGL context**:
 
@@ -167,6 +235,11 @@ pixels.
   for the "Press Esc or click to close projection" hint,
 - `showImage()` / `clearImage()` and a blackout toggle,
 - presentation state: quarter-turn rotation and horizontal/vertical mirroring.
+
+`ProjectionRenderer` owns the shaders, VAOs/VBOs, texture, transform UV
+math, and hint text. It has GLSL ES 3 variants for Android
+(`#version 300 es`, `precision highp float`, no `core` profile), so the same
+renderer can drive the desktop window and a future Android EGL surface.
 
 Rendering uploads the texture when the image changes, builds an aspect-fit quad,
 and applies rotation/mirroring as a UV transform. Transforms affect only the
@@ -196,6 +269,12 @@ handles this in layers:
 
 X11/Xinerama support is optional at build time (`AB_HAVE_X11`,
 `AB_HAVE_XINERAMA`); without it the code falls back to GLFW behavior.
+
+On Android there is no GLFW monitor list or second desktop window. The current
+`ProjectionWindowAndroid.cpp` is a compile-able stub; the planned backend will
+enumerate outputs through `DisplayManager` and render into a `Presentation`
+`Surface` with EGL, reusing the shared projection renderer. Until then,
+projection is desktop-only.
 
 Input: the projection window has key and mouse-button callbacks. Esc or any
 mouse press sets a close request, which `Application::newFrame()` consumes.
@@ -258,19 +337,36 @@ initiative_meta         key/value (round, current)
 Notes and images are not copied into the database; only their root paths are
 remembered.
 
+The Android host keeps the database and `imgui.ini` in
+`activity->internalDataPath`. It currently uses app-private `notes/` and
+`images/` directories; when SAF lands, its tree URIs will use the same
+`last_project_path` / `last_images_path` settings keys. No schema migration is
+required.
+
 ## Build system
 
 - CMake >= 3.25, C++17, C11.
 - `FetchContent` pulls GLFW 3.4, Dear ImGui (docking), MD4C 0.6.0, SQLite
   amalgamation, and stb.
 - glad and imgui_md are vendored under `third_party/`.
-- Optional integrations are compile-time flags:
+- Bundled fonts live under `assets/fonts/` and are found through the
+  `AB_ASSET_DIR` compile definition. Fontconfig is an optional Linux fallback.
+- Optional Linux integrations are compile-time flags:
   - `AB_HAVE_FONTCONFIG` — locate system fonts via fontconfig,
   - `AB_HAVE_X11`, `AB_HAVE_XINERAMA` — projection monitor targeting.
 - Our targets build with `-Wall -Wextra`; vendored code (imgui_md, stb,
   sqlite, glad) is not restyled and is built without the project warning flags.
 - `scripts/gen_compile_commands.sh` generates a clangd-friendly
-  `compile_commands.json` at the repo root after every configure/build.
+  `compile_commands.json` at the repo root after every configure/build. It is
+  Linux-only and will need a guard for Windows and Android builds.
+- Cross-platform build status:
+  - Windows: MSVC + CMake with WGL; X11 and fontconfig disabled; built by the
+    GitHub Actions job (hardware validation pending).
+  - Android: Gradle + CMake `externalNativeBuild`, NativeActivity + EGL +
+    OpenGL ES 3, `native_app_glue`, and a shared-library target; debug APK
+    builds locally with NDK 29.
+  - CI: Linux CMake/Ninja, Windows MSVC, and the Android debug APK are
+    configured in `.github/workflows/build.yml`.
 
 ## Threading and GL context rules
 
