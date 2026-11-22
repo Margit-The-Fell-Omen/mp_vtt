@@ -217,6 +217,10 @@ else()
   )
   if(WIN32)
     target_link_libraries(AdventureBoard PRIVATE shell32 ole32)
+    target_compile_definitions(AdventureBoard PRIVATE
+      NOMINMAX
+      WIN32_LEAN_AND_MEAN
+    )
   endif()
 endif()
 
