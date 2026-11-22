@@ -141,8 +141,8 @@ These are current limitations, not necessarily the next tasks:
 - Windows build support is implemented but has not been validated on Windows
   hardware.
 - Android builds a debug APK but has not been runtime-validated; SAF folder
-  access and Presentation projection are still pending. The plan is in
-  [CROSS_PLATFORM.md](CROSS_PLATFORM.md).
+  access is implemented, while Presentation projection is still pending. The
+  plan is in [CROSS_PLATFORM.md](CROSS_PLATFORM.md).
 - The File menu advertises `Ctrl+N` for a new note, but the shortcut is not
   wired yet.
 - Notes can only rename/delete files, not directories.
@@ -156,7 +156,7 @@ These are current limitations, not necessarily the next tasks:
 - X11 is the default platform because native Wayland can block during vsync
   when the window is occluded on some tiling compositors.
 - Initiative supports one encounter at a time; status is free text.
-- No automated tests, CI, or packaging.
+- No automated tests yet; CI builds and GitHub Release packaging exist.
 
 ## Planned / proposed
 
@@ -178,16 +178,16 @@ The full design and acceptance criteria are in
 3. **Android shell** (in progress)
    - NativeActivity + EGL + OpenGL ES 3 host with `imgui_impl_android`.
    - Touch input and soft keyboard via JNI.
-   - App-private database, `imgui.ini`, and default notes/images folders;
-     SAF folder selection is still pending.
+   - App-private database, `imgui.ini`, default notes/images folders, and
+     SAF tree selection with persisted URI grants.
    - `minSdk` 26; sideloaded `arm64-v8a` / `x86_64` debug APK builds.
 4. **Android projection**
    - Android `Presentation` + `SurfaceView` + EGL, reusing
      `ProjectionRenderer`.
    - External-display enumeration and graceful fallback when none is available.
-5. **CI and packaging**
+5. **CI and packaging** (implemented)
    - GitHub Actions matrix for Linux, Windows, and Android.
-   - APK build artifact and signing/sideloading notes.
+   - Tag/manual-dispatch releases attach Linux, Windows, and Android artifacts.
 
 ### Near term
 
@@ -223,8 +223,8 @@ The full design and acceptance criteria are in
 
 - Headless unit tests for pure logic: initiative ordering and HP clamping,
   palette derivation, note tree scanning, settings round-trips.
-- Linux packaging (AppImage, Flatpak, or a Nix package) beyond the existing
-  Linux/Windows CI jobs and the Android APK artifact.
+- Linux distribution packages (AppImage, Flatpak, or Nix) beyond the GitHub
+  release tarball.
 - Structured logging with a debug flag instead of ad-hoc `stderr` messages.
 - Crash/error reporting that keeps user data safe.
 - Localization and accessibility review (keyboard-only workflows, contrast

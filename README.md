@@ -15,15 +15,14 @@ features, known gaps, and planned work.
 ## Platform support
 
 Linux is the validated runtime platform. Windows build support is implemented
-(MSVC/CMake, platform helpers, UTF-8 paths, drive-aware folder picker, bundled
+(MSVC/CMake, platform helpers, UTF-8 paths, drive-aware folder picker, embedded
 fonts) and has a CI build job, but has not been validated on Windows hardware
 yet.
 
-Android now has a native NativeActivity/EGL host, soft-keyboard bridge, bundled
-font extraction, and an app-private notes/images default. It builds a signed
-debug APK with the NDK. Runtime validation on a device/emulator is still
-pending, and SAF folder access plus Presentation-based projection are not
-implemented yet.
+Android now has a native NativeActivity/EGL host, soft-keyboard bridge, embedded
+fonts, app-private notes/images defaults, and SAF folder selection. It builds a
+signed debug APK with the NDK. Runtime validation on a device/emulator is still
+pending, and Presentation-based projection is not implemented yet.
 
 The shared core uses a `Storage` abstraction and platform helpers so the same
 notes, initiative, theme, and database code runs on every platform.
@@ -149,6 +148,22 @@ VC++ redistributable), and Linux links libstdc++/libgcc statically. Linux still
 uses the system X11/OpenGL/Wayland libraries. The Android APK embeds the native
 library and fonts; no asset files or post-install setup are required.
 
+## Releases
+
+Push a version tag to build and publish Linux, Windows, and Android artifacts:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+You can also run the `build` workflow manually and provide a release tag. The
+release workflow attaches:
+
+- `AdventureBoard-linux-x86_64.tar.gz`
+- `AdventureBoard-windows-x86_64.zip`
+- `AdventureBoard-android-debug.apk` (debug-signed)
+
 ## Configuration and data
 
 Everything the app persists lives in `~/.adventureboard/`:
@@ -165,8 +180,8 @@ in the database. Closing the notes folder clears the saved notes root.
 The plan keeps the same `~/.adventureboard/` layout on Windows. Android has no
 equivalent home directory, so the database and `imgui.ini` live in the app's
 private internal storage. On first launch the app creates `notes/` and
-`images/` there. User-selected SAF folders are not wired yet; see
-[docs/CROSS_PLATFORM.md](docs/CROSS_PLATFORM.md).
+`images/` there. The folder buttons can switch either root to a user-selected
+SAF folder; the persisted URI grant is reused across restarts.
 
 Environment variables:
 
@@ -217,7 +232,7 @@ src/
   notes/       NoteManager, MarkdownRenderer
   initiative/  InitiativeTracker, Participant
   platform/    Platform helpers, GL abstraction, DesktopStorage
-  platform/android/  NativeActivity host, soft keyboard, projection stub
+  platform/android/  NativeActivity host, soft keyboard, SAF storage, projection stub
   projection/  ImageStore, ProjectionRenderer, ProjectionWindow
 android/       Gradle app, Java NativeActivity, manifest
 assets/        bundled fonts and license (embedded at build time)
@@ -239,9 +254,9 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
   compositors rely on the EWMH hint.
 - Windows build support is implemented but not validated on Windows hardware
   yet.
-- Android builds an APK but has not been runtime-validated. SAF folder access
-  and second-screen projection are still pending; notes/images default to
-  app-private storage. The plan is in
+- Android builds an APK but has not been runtime-validated. Second-screen
+  projection is still pending; notes/images can use app-private storage or
+  user-selected SAF folders. The plan is in
   [docs/CROSS_PLATFORM.md](docs/CROSS_PLATFORM.md).
 - No automated tests yet; Linux, Windows, and Android build jobs exist.
 

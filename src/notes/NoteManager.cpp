@@ -1,5 +1,7 @@
 #include "notes/NoteManager.h"
 
+#include "platform/Platform.h"
+
 #include <algorithm>
 #include <cctype>
 
@@ -78,7 +80,7 @@ bool NoteManager::rename(const Path& from, const Path& to) {
     if (!m_storage->exists(src) || m_storage->exists(dst)) {
         return false;
     }
-    return m_storage->rename(src, dst);
+    return m_storage->rename(src, platform::pathToUtf8(to.filename()));
 }
 
 bool NoteManager::remove(const Path& relativePath) {

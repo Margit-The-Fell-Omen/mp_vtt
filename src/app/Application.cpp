@@ -4,6 +4,12 @@
 #include "notes/MarkdownRenderer.h"
 #include "platform/Platform.h"
 
+#if defined(__ANDROID__)
+#include "platform/android/AndroidStorage.h"
+#else
+#include "platform/desktop/DesktopStorage.h"
+#endif
+
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <backends/imgui_impl_opengl3.h>
@@ -141,9 +147,11 @@ static bool nextListItemPrefix(const std::string& line, std::string& out) {
     return true;
 }
 
+#if !defined(__ANDROID__)
 static std::string homeDir() {
     return platform::homeDir();
 }
+#endif
 
 static std::string defaultDbPath() {
     return platform::pathToUtf8(platform::configDir() / "ab.db");
@@ -218,8 +226,16 @@ bool Application::initCore() {
     m_project.setRootPath(m_settings.lastProjectPath);
     m_reopenRoot = m_settings.lastProjectPath;
 
-    m_notes.setStorage(m_storage);
-    m_images.setStorage(m_storage);
+#if defined(__ANDROID__)
+    m_storage = platform::makeAndroidStorage();
+#else
+    m_storage = std::make_unique<DesktopStorage>();
+#endif
+    if (!m_storage) {
+        return false;
+    }
+    m_notes.setStorage(*m_storage);
+    m_images.setStorage(*m_storage);
     m_notes.rescan(platform::pathFromUtf8(m_project.rootPath()));
     m_images.rescan(platform::pathFromUtf8(m_settings.lastImagesPath));
     m_initiative.load(m_database);
@@ -726,14 +742,37 @@ void Application::saveSettingsNow() {
     m_savedH = h;
 }
 
+void Application::requestNotesFolder() {
+#if defined(__ANDROID__)
+    platform::androidRequestFolderPick(0);
+#else
+    m_pickerTitle = "Choose notes folder";
+    m_pickerTarget = 0;
+    m_pickerCurrent = m_project.rootPath().empty()
+                          ? (m_reopenRoot.empty() ? homeDir() : m_reopenRoot)
+                          : m_project.rootPath();
+    m_pickerOpen = true;
+#endif
+}
+
+void Application::requestImagesFolder() {
+#if defined(__ANDROID__)
+    platform::androidRequestFolderPick(1);
+#else
+    m_pickerTitle = "Choose images folder";
+    m_pickerTarget = 1;
+    m_pickerCurrent = m_images.root().empty()
+                          ? homeDir()
+                          : platform::pathToUtf8(m_images.root());
+    m_pickerOpen = true;
+#endif
+}
+
 void Application::createNewNote() {
     if (!m_notes.hasRoot()) {
         // No folder yet; guide the user to pick one first.
         m_newNoteOpen = false;
-        m_pickerTitle = "Choose notes folder";
-        m_pickerTarget = 0;
-        m_pickerCurrent = m_reopenRoot.empty() ? homeDir() : m_reopenRoot;
-        m_pickerOpen = true;
+        requestNotesFolder();
         return;
     }
     std::string name = m_newNoteName;
@@ -809,13 +848,7 @@ void Application::drawMenuBar() {
                 m_newNoteOpen = true;
             }
             if (ImGui::MenuItem("Open notes folder...")) {
-                m_pickerTitle = "Choose notes folder";
-                m_pickerTarget = 0;
-                m_pickerCurrent = m_project.rootPath().empty()
-                                      ? (m_reopenRoot.empty() ? homeDir()
-                                                              : m_reopenRoot)
-                                      : m_project.rootPath();
-                m_pickerOpen = true;
+                requestNotesFolder();
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Quit")) {
@@ -860,12 +893,7 @@ void Application::drawNotesPanel() {
                         m_project.rootPath().empty() ? "(none)"
                                                      : m_project.rootPath().c_str());
     if (ImGui::Button("Open folder...")) {
-        m_pickerTitle = "Choose notes folder";
-        m_pickerTarget = 0;
-        m_pickerCurrent = m_project.rootPath().empty()
-                              ? (m_reopenRoot.empty() ? homeDir() : m_reopenRoot)
-                              : m_project.rootPath();
-        m_pickerOpen = true;
+        requestNotesFolder();
     }
     if (m_notes.hasRoot()) {
         ImGui::SameLine();
@@ -1093,8 +1121,9 @@ void Application::drawNotesPanel() {
         ImGui::BeginChild("preview", ImVec2(0, previewH), ImGuiChildFlags_Borders);
         MarkdownRenderer::render(
             m_editorBuffer,
-            m_storage.parent(
-                m_notes.absolute(platform::pathFromUtf8(m_selectedPath))), m_storage);
+            m_notes.absolute(
+                platform::pathFromUtf8(m_selectedPath).parent_path()),
+            *m_storage);
         ImGui::EndChild();
     }
 
@@ -1115,12 +1144,7 @@ void Application::drawProjectionPanel() {
                         m_images.root().empty() ? "(none)"
                                                 : imagesRoot.c_str());
     if (ImGui::Button("Open folder...")) {
-        m_pickerTitle = "Choose images folder";
-        m_pickerTarget = 1;
-        m_pickerCurrent = m_images.root().empty()
-                              ? homeDir()
-                              : platform::pathToUtf8(m_images.root());
-        m_pickerOpen = true;
+        requestImagesFolder();
     }
     ImGui::SameLine();
     if (ImGui::Button("Rescan")) {
@@ -1813,13 +1837,13 @@ bool Application::initAndroid(void* nativeWindow) {
     const fs::path notesRoot =
         platform::pathFromUtf8(m_project.rootPath());
     if (m_project.rootPath().empty() ||
-        !fs::is_directory(notesRoot, dirEc)) {
+        !m_storage->isDirectory(notesRoot)) {
         const fs::path notesDir = platform::configDir() / "notes";
         fs::create_directories(notesDir, dirEc);
         openNotesFolder(notesDir);
     }
     if (m_images.root().empty() ||
-        !fs::is_directory(m_images.root(), dirEc)) {
+        !m_storage->isDirectory(m_images.root())) {
         const fs::path imagesDir = platform::configDir() / "images";
         fs::create_directories(imagesDir, dirEc);
         openImagesFolder(imagesDir);
@@ -1896,6 +1920,16 @@ bool Application::initAndroid(void* nativeWindow) {
 void Application::frameAndroid() {
     if (g_eglDisplay == EGL_NO_DISPLAY || g_eglSurface == EGL_NO_SURFACE) {
         return;
+    }
+
+    std::string pickedUri;
+    int pickedKind = -1;
+    if (platform::androidPollFolderPick(pickedUri, pickedKind)) {
+        if (pickedKind == 0) {
+            openNotesFolder(platform::pathFromUtf8(pickedUri));
+        } else if (pickedKind == 1) {
+            openImagesFolder(platform::pathFromUtf8(pickedUri));
+        }
     }
 
     ImGui_ImplOpenGL3_NewFrame();

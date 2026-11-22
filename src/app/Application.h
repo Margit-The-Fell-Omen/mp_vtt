@@ -1,9 +1,9 @@
 #pragma once
 
 #include "core/Database.h"
-#include "platform/desktop/DesktopStorage.h"
 #include "core/Project.h"
 #include "core/Settings.h"
+#include "core/Storage.h"
 #include "initiative/InitiativeTracker.h"
 #include "notes/NoteManager.h"
 #include "projection/ImageStore.h"
@@ -41,6 +41,8 @@ private:
     void draw();
     void drawMenuBar();
     void drawNotesPanel();
+    void requestNotesFolder();
+    void requestImagesFolder();
     void drawProjectionPanel();
     void drawInitiativePanel();
 
@@ -71,7 +73,7 @@ private:
     Settings m_settings;
     Database m_database;
     Project m_project;
-    DesktopStorage m_storage;
+    std::unique_ptr<Storage> m_storage;
     NoteManager m_notes;
     ImageStore m_images;
     ProjectionWindow m_projection;

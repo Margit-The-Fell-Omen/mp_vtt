@@ -55,9 +55,13 @@ bool DesktopStorage::readBytes(const Path& location,
     return platform::readFileBytes(location, out);
 }
 
-bool DesktopStorage::rename(const Path& from, const Path& to) {
+bool DesktopStorage::rename(const Path& from,
+                            const std::string& newName) {
+    if (newName.empty()) {
+        return false;
+    }
     std::error_code ec;
-    fs::rename(from, to, ec);
+    fs::rename(from, from.parent_path() / platform::pathFromUtf8(newName), ec);
     return !ec;
 }
 

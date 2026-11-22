@@ -39,7 +39,7 @@ Android host status:
   ImGui Android input, soft keyboard/Unicode JNI, and app lifecycle.
 - `ProjectionWindowAndroid.cpp` is a stub; `Presentation` projection is pending.
 - Notes/images default to app-private `notes/` and `images/` directories.
-- SAF folder picking and full device validation are still pending.
+- SAF folder picking is implemented; full device validation is still pending.
 
 References to GLFW, X11, and `~/.adventureboard` below describe the current
 desktop implementation.
@@ -105,6 +105,7 @@ src/
       DesktopStorage.{h,cpp} std::filesystem implementation
     android/
       android_main.cpp     NativeActivity + EGL + soft keyboard host
+      AndroidStorage.{h,cpp} SAF + app-private routing storage
       ProjectionWindowAndroid.cpp  projection stub (Presentation pending)
   projection/
     ImageStore.{h,cpp}     image folder scan + stb_image decoding
@@ -119,7 +120,7 @@ third_party/
 ```
 
 The Android Gradle project lives in `android/` and builds the shared library
-with the NDK. SAF storage and Presentation projection are still pending.
+with the NDK. SAF storage is implemented; Presentation projection is still pending.
 
 ## Application lifecycle
 
@@ -164,8 +165,8 @@ ImGui backends and GLFW) and `shutdownCore()` (close the database).
 On Android, `android_main.cpp` calls `initAndroid()` on `APP_CMD_INIT_WINDOW`,
 `frameAndroid()` for each frame, and `shutdownAndroid()` on
 `APP_CMD_TERM_WINDOW`. Core state survives surface recreation. App-private
-`notes/` and `images/` directories are created on first launch until SAF
-storage lands.
+`notes/` and `images/` directories are created on first launch; users can
+switch either root to a SAF tree through the folder buttons.
 
 ## UI architecture
 
@@ -338,10 +339,12 @@ Notes and images are not copied into the database; only their root paths are
 remembered.
 
 The Android host keeps the database and `imgui.ini` in
-`activity->internalDataPath`. It currently uses app-private `notes/` and
-`images/` directories; when SAF lands, its tree URIs will use the same
-`last_project_path` / `last_images_path` settings keys. No schema migration is
-required.
+`activity->internalDataPath`. App-private `notes/` and `images/` directories are
+the defaults. `AndroidRoutingStorage` sends `content://` locations to
+`AndroidSafStorage`, which resolves SAF tree/document URIs through JNI calls to
+`MainActivity`. The tree picker uses `ACTION_OPEN_DOCUMENT_TREE` and
+`takePersistableUriPermission`; tree URIs use the same `last_project_path` /
+`last_images_path` settings keys. No schema migration is required.
 
 ## Build system
 
@@ -367,7 +370,8 @@ required.
     OpenGL ES 3, `native_app_glue`, and a shared-library target; debug APK
     builds locally with NDK 29.
   - CI: Linux CMake/Ninja, Windows MSVC, and the Android debug APK are
-    configured in `.github/workflows/build.yml`.
+    configured in `.github/workflows/build.yml`; tag/manual releases publish
+    all three artifacts to GitHub Releases.
 
 ## Threading and GL context rules
 

@@ -1,5 +1,6 @@
 #include "app/Application.h"
 #include "platform/Platform.h"
+#include "platform/android/AndroidStorage.h"
 
 #include <backends/imgui_impl_android.h>
 #include <imgui.h>
@@ -113,6 +114,7 @@ void handleAppCmd(android_app* app, int32_t command) {
             if (app->window && g_application && !g_initialized) {
                 ab::platform::setAndroidDataDir(
                     app->activity->internalDataPath);
+                ab::platform::setAndroidActivity(app->activity);
                 g_initialized =
                     g_application->initAndroid(app->window);
             }
@@ -141,6 +143,7 @@ void android_main(android_app* app) {
     app->onAppCmd = handleAppCmd;
     app->onInputEvent = handleInputEvent;
     g_app = app;
+    ab::platform::setAndroidActivity(app->activity);
 
     ab::Application application;
     g_application = &application;

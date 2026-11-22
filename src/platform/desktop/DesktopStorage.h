@@ -17,7 +17,8 @@ public:
     bool readBytes(const Path& location,
                    std::vector<unsigned char>& out) const override;
 
-    bool rename(const Path& from, const Path& to) override;
+    bool rename(const Path& from,
+                const std::string& newName) override;
     bool remove(const Path& location) override;
 
     Path join(const Path& base, const Path& child) const override;

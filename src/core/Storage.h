@@ -34,7 +34,8 @@ public:
     virtual bool readBytes(const Path& location,
                            std::vector<unsigned char>& out) const = 0;
 
-    virtual bool rename(const Path& from, const Path& to) = 0;
+    virtual bool rename(const Path& from,
+                        const std::string& newName) = 0;
     virtual bool remove(const Path& location) = 0;
 
     // Appends a relative child to a base location.

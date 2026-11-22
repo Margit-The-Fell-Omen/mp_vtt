@@ -152,6 +152,7 @@ set(AB_COMMON_SOURCES
 if(ANDROID)
   add_library(AdventureBoard SHARED
     ${AB_COMMON_SOURCES}
+    src/platform/android/AndroidStorage.cpp
     src/platform/android/ProjectionWindowAndroid.cpp
     src/platform/android/android_main.cpp
     ${ANDROID_NDK}/sources/android/native_app_glue/android_native_app_glue.c

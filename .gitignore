@@ -6,6 +6,12 @@ build/
 build-android/
 .android-sdk/
 
+# Release packaging
+dist/
+AdventureBoard-linux-*.tar.gz
+AdventureBoard-windows-*.zip
+AdventureBoard-android-*.apk
+
 # Android/Gradle
 android/.gradle/
 android/.cxx/

@@ -3,8 +3,8 @@
 > Status: **Phase 1–2 implemented; Phase 3 in progress.** Linux is still the
 > validated runtime platform. Windows build support and the shared Android
 > seams are in place. Android now builds a signed debug APK with the NDK and
-> has a NativeActivity/EGL host, soft keyboard, embedded bundled fonts, and
-> app-private notes/images defaults. SAF storage, runtime validation, and
+> has a NativeActivity/EGL host, soft keyboard, embedded bundled fonts,
+> app-private defaults, and SAF folder storage. Runtime validation and
 > Presentation projection are still pending.
 
 ## Goals
@@ -54,7 +54,7 @@ src/platform/
   Platform.h/.cpp    config dir, URL open, path conversion, roots, file reads
   GL.h               glad on desktop, GLES3 on Android
   desktop/           DesktopStorage (std::filesystem)
-  android/           NativeActivity host, EGL, JNI bridge; SAF pending
+  android/           NativeActivity host, EGL, JNI bridge, SAF storage
 android/             Gradle app, MainActivity.java, manifest
 assets/fonts/        Liberation fonts + license (embedded at build)
 ```
@@ -156,10 +156,11 @@ changes. Storage, lifecycle, GL includes, fonts, and the shared
 Exit: Windows and Linux still build and behave identically; the desktop backend
 uses the new seams.
 
-### Phase 3 — Android shell: notes, initiative, SAF (in progress)
+### Phase 3 — Android shell: notes, initiative, SAF (implemented, device validation pending)
 
-Target: about 1–2 weeks. Native host, soft keyboard, app-private storage, and
-APK packaging are done; SAF storage and device validation are pending.
+Target: about 1–2 weeks. Native host, soft keyboard, app-private storage, SAF
+folder storage, and APK packaging are done; device/emulator validation is
+pending.
 
 1. Build integration
    - Gradle project with `externalNativeBuild.cmake`.
@@ -179,7 +180,7 @@ APK packaging are done; SAF storage and device validation are pending.
    - Soft keyboard via JNI (`showSoftInput` / `hideSoftInput`) when
      `io.WantTextInput` changes; poll Unicode characters through JNI.
    - Touch-sized scaling with `style.ScaleAllSizes()` and matching font sizes.
-3. SAF storage (pending; app-private defaults are in place)
+3. SAF storage (done; app-private defaults are also supported)
    - Java `MainActivity`: launch `ACTION_OPEN_DOCUMENT_TREE`, request
      read/write permission, and persist the grant with
      `takePersistableUriPermission`.
@@ -222,15 +223,17 @@ Target: about 1–2 weeks. Highest-risk phase.
 Exit: the image projects to a real second display; transforms and blackout work;
 the main UI context survives; surface loss and recreation recover cleanly.
 
-### Phase 5 — CI, packaging, and documentation
+### Phase 5 — CI, packaging, and documentation (implemented)
 
-- Add a GitHub Actions matrix:
-  - Linux: CMake + Ninja.
-  - Windows: MSVC + CMake.
-  - Android: JDK 17, Android SDK/NDK, Gradle `assembleDebug`, APK artifact.
-- Update the README, architecture notes, and roadmap with the supported matrix,
-  Android storage model, and build instructions.
-- Document APK signing and sideloading.
+- GitHub Actions matrix:
+  - Linux: CMake + Ninja, packaged as a `.tar.gz`.
+  - Windows: MSVC + CMake, packaged as a `.zip`.
+  - Android: JDK 17, Android SDK/NDK, Gradle `assembleDebug`, packaged APK.
+- Tag push or manual dispatch publishes all three assets to a GitHub Release.
+- README, architecture notes, and roadmap cover the supported matrix, Android
+  storage model, build instructions, and release flow.
+- The Android artifact is debug-signed; production signing can be added with
+  repository secrets later.
 
 ## Platform behavior matrix
 
@@ -238,7 +241,7 @@ the main UI context survives; surface loss and recreation recover cleanly.
 | --- | --- | --- | --- |
 | Windowing | GLFW / X11 or Wayland | GLFW / WGL | NativeActivity + EGL |
 | Graphics | OpenGL 3.3 core | OpenGL 3.3 core | OpenGL ES 3 |
-| Projection | GLFW fullscreen window | GLFW fullscreen window | Presentation API + Surface |
+| Projection | GLFW fullscreen window | GLFW fullscreen window | Presentation API + Surface (pending) |
 | Notes/images | Filesystem paths | Filesystem paths | SAF tree URIs |
 | App data | `~/.adventureboard` | `~/.adventureboard` | App internal storage |
 | URL opening | `xdg-open` | `ShellExecuteW` | Android `Intent` (planned) |
@@ -271,6 +274,6 @@ These must not change between platforms:
 
 ## Estimated effort
 
-About **4–6 weeks for one experienced developer**. SAF storage and Android
-second-screen projection are the long poles. Phase 1 (Windows) is independent
-and can ship first.
+About **4–6 weeks for one experienced developer**. Android second-screen
+projection is the long pole; SAF storage is implemented. Phase 1 (Windows) is
+independent and can ship first.
