@@ -4,16 +4,10 @@
 #include <backends/imgui_impl_android.h>
 #include <imgui.h>
 
-#include <android/asset_manager.h>
-#include <android/log.h>
 #include <android_native_app_glue.h>
 #include <jni.h>
 
 #include <cstdint>
-#include <filesystem>
-#include <fstream>
-#include <string>
-#include <system_error>
 
 namespace {
 
@@ -113,52 +107,12 @@ int pollUnicodeChars() {
     return 0;
 }
 
-namespace fs = std::filesystem;
-
-void copyAsset(AAssetManager* manager, const char* assetName,
-               const fs::path& destination) {
-    if (fs::exists(destination)) {
-        return;
-    }
-    AAsset* asset =
-        AAssetManager_open(manager, assetName, AASSET_MODE_BUFFER);
-    if (!asset) {
-        return;
-    }
-    std::ofstream out(destination, std::ios::binary | std::ios::trunc);
-    if (out) {
-        char buffer[4096];
-        int count = 0;
-        while ((count = AAsset_read(asset, buffer, sizeof(buffer))) > 0) {
-            out.write(buffer, count);
-        }
-    }
-    AAsset_close(asset);
-}
-
-void prepareBundledFonts(android_app* app) {
-    const fs::path dir = fs::path(app->activity->internalDataPath) / "fonts";
-    std::error_code ec;
-    fs::create_directories(dir, ec);
-    AAssetManager* manager = app->activity->assetManager;
-    static const char* kFonts[] = {
-        "LiberationSans-Regular.ttf", "LiberationSans-Bold.ttf",
-        "LiberationSans-Italic.ttf", "LiberationSans-BoldItalic.ttf",
-        "LiberationMono-Regular.ttf"};
-    for (const char* name : kFonts) {
-        const std::string asset = std::string("fonts/") + name;
-        copyAsset(manager, asset.c_str(), dir / name);
-    }
-    ab::platform::setBundledFontDir(ab::platform::pathToUtf8(dir));
-}
-
 void handleAppCmd(android_app* app, int32_t command) {
     switch (command) {
         case APP_CMD_INIT_WINDOW:
             if (app->window && g_application && !g_initialized) {
                 ab::platform::setAndroidDataDir(
                     app->activity->internalDataPath);
-                prepareBundledFonts(app);
                 g_initialized =
                     g_application->initAndroid(app->window);
             }

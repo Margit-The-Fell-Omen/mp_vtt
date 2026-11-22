@@ -52,7 +52,7 @@ Example:
 | Local variables / parameters | camelCase | `monitorIndex`, `logicalW`, `quarterTurns` |
 | Constants / schema strings | `k` + PascalCase | `kVertShader`, `kSchemaParticipant`, `kMaxHintQuads` |
 | Enum values | `EnumName_Value` | `PendingOp_Default`, `PendingOp_Move` |
-| Environment variables | `AB_` prefix | `AB_FONT`, `AB_GLFW_PLATFORM` |
+| Environment variables | `AB_` prefix | `AB_GLFW_PLATFORM` |
 
 Files are named after the primary type they contain (`Application.cpp`,
 `NoteManager.h`). Header guards are not used because all headers are

@@ -14,10 +14,6 @@ std::string homeDir();
 // core initialization. Ignored on desktop.
 void setAndroidDataDir(const std::string& path);
 
-// Directory containing bundled TTF files. Empty means "use AB_ASSET_DIR".
-void setBundledFontDir(const std::string& path);
-std::string bundledFontDir();
-
 // Application data directory (currently ~/.adventureboard on every desktop).
 std::filesystem::path configDir();
 

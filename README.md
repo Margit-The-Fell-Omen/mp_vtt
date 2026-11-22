@@ -82,17 +82,18 @@ architecture, phases, and platform behavior matrix.
 ## Requirements
 
 - CMake 3.25 or newer, Ninja (recommended), a C++17 compiler.
+- Python 3 (used at build time to embed the bundled fonts).
 - OpenGL 3.3 capable drivers.
 - Android builds: JDK 17, Gradle, Android SDK (platform 36, build-tools 36.1)
   and NDK 29.0.14206865.
 - Linux/X11 development headers for the default platform:
   `libx11`, `libxcursor`, `libxinerama`, `libxrandr`, `libxi`, `libGL`.
-- Optional: fontconfig (fallback system font discovery), Wayland client
-  libraries (only when running with `AB_GLFW_PLATFORM=wayland`).
+- Optional: Wayland client libraries (only when running with
+  `AB_GLFW_PLATFORM=wayland`).
 - Network access during the first configure: CMake fetches GLFW 3.4, Dear ImGui
   (docking), MD4C 0.6.0, SQLite, and stb. glad and imgui_md are vendored.
-- Liberation Sans/Mono fonts are bundled under `assets/fonts/` and used on
-  every platform.
+- Liberation Sans/Mono fonts under `assets/fonts/` are embedded into the
+  executable/library at build time, so no font files are needed at runtime.
 
 On NixOS the repository ships a dev shell with all of the above:
 
@@ -142,6 +143,12 @@ AGP-downloaded `aapt2` is a generic Linux binary; if it cannot run, patch its
 interpreter or pass a patched binary with
 `-Pandroid.aapt2FromMavenOverride=/path/to/aapt2`.
 
+The desktop executables are self-contained: fonts and the Liberation license
+are embedded at build time, Windows builds use the static MSVC runtime (no
+VC++ redistributable), and Linux links libstdc++/libgcc statically. Linux still
+uses the system X11/OpenGL/Wayland libraries. The Android APK embeds the native
+library and fonts; no asset files or post-install setup are required.
+
 ## Configuration and data
 
 Everything the app persists lives in `~/.adventureboard/`:
@@ -167,7 +174,6 @@ Environment variables:
 | --- | --- |
 | `AB_GLFW_PLATFORM=wayland` | Try the native Wayland backend instead of X11/XWayland. |
 | `AB_GLFW_PLATFORM=x11` | Force X11 (the default). |
-| `AB_FONT=/path/to/font.ttf` | Use a specific font file for the whole UI. |
 
 ## Keyboard shortcuts
 
@@ -214,7 +220,7 @@ src/
   platform/android/  NativeActivity host, soft keyboard, projection stub
   projection/  ImageStore, ProjectionRenderer, ProjectionWindow
 android/       Gradle app, Java NativeActivity, manifest
-assets/        bundled fonts and license
+assets/        bundled fonts and license (embedded at build time)
 third_party/   glad, imgui_md
 scripts/       compile_commands.json generator for clangd
 .github/       Linux and Windows build workflows
@@ -248,4 +254,5 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 - [stb](https://github.com/nothings/stb) (`stb_image`, `stb_easy_font`)
 - [glad](https://github.com/Dav1dde/glad) (vendored)
 - [imgui_md](third_party/imgui_md) (vendored)
-- Liberation Sans/Mono (bundled, SIL OFL; see `assets/fonts/LICENSE-Liberation.txt`)
+- Liberation Sans/Mono (embedded at build time, SIL OFL; see
+  `assets/fonts/LICENSE-Liberation.txt`)

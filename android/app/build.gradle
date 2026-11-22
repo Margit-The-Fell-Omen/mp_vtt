@@ -30,12 +30,6 @@ android {
         }
     }
 
-    sourceSets {
-        main {
-            assets.srcDirs = ['../../assets']
-        }
-    }
-
     buildTypes {
         release {
             minifyEnabled false

@@ -9,6 +9,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -21,7 +24,6 @@ jobs:
             libxrandr-dev \
             libxi-dev \
             libgl1-mesa-dev \
-            libfontconfig1-dev \
             libwayland-dev \
             libwayland-bin \
             wayland-protocols \
@@ -35,6 +37,9 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
       - name: Configure
         run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
       - name: Build
@@ -44,6 +49,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
       - name: Install CMake and Ninja
         run: |
           sudo apt-get update

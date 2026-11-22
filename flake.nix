@@ -21,6 +21,7 @@
           packages = with androidPkgs; [
             cmake
             ninja
+            python3
             jdk17
             gradle
             androidenv.androidPkgs.ndk-bundle
@@ -50,8 +51,6 @@
             wayland
             wayland-scanner
             libxkbcommon
-            fontconfig
-            dejavu_fonts
             python3
           ];
 
@@ -67,7 +66,6 @@
             libxinerama
             libxrandr
             libxi
-            fontconfig
           ];
 
           shellHook = ''

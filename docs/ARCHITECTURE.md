@@ -30,8 +30,8 @@ Implemented seams:
 - `src/platform/GL.h` selects glad on desktop and GLES3 headers on Android.
 - `Application` has `initCore()` / `initGraphics()` and `shutdownGraphics()` /
   `shutdownCore()` so core state can outlive a graphics context.
-- Fonts are bundled under `assets/fonts/` and loaded from memory-independent
-  files; fontconfig is only a fallback.
+- Fonts under `assets/fonts/` are embedded into the binary at build time and
+  loaded from memory; there is no runtime font lookup or fontconfig dependency.
 
 Android host status:
 
@@ -41,8 +41,8 @@ Android host status:
 - Notes/images default to app-private `notes/` and `images/` directories.
 - SAF folder picking and full device validation are still pending.
 
-References to GLFW, X11, fontconfig, and `~/.adventureboard` below describe the
-current desktop implementation.
+References to GLFW, X11, and `~/.adventureboard` below describe the current
+desktop implementation.
 
 ## High-level overview
 
@@ -112,7 +112,7 @@ src/
     ProjectionWindow.{h,cpp} separate fullscreen GLFW window, callbacks,
                               monitor targeting
 
-assets/fonts/  bundled Liberation Sans/Mono + license
+assets/fonts/  Liberation Sans/Mono + license (embedded at build)
 third_party/
   glad/        vendored OpenGL loader
   imgui_md/    vendored ImGui markdown renderer (MD4C-backed)
@@ -141,8 +141,8 @@ database and services can be created without a graphics context.
 1. Select the GLFW platform on Linux: X11 by default, Wayland via
    `AB_GLFW_PLATFORM=wayland`; fall back to GLFW's automatic choice.
 2. Create the main window (OpenGL 3.3 core), load glad, create the ImGui
-   context, apply the saved theme, load the bundled fonts, and enable docking +
-   keyboard nav.
+   context, apply the saved theme, load the embedded fonts, and enable docking
+   + keyboard nav.
 3. Point ImGui at `~/.adventureboard/imgui.ini`.
 4. Initialize the GLFW/OpenGL ImGui backends.
 5. Pick a default projection monitor (a monitor other than the app window's).
@@ -349,18 +349,19 @@ required.
 - `FetchContent` pulls GLFW 3.4, Dear ImGui (docking), MD4C 0.6.0, SQLite
   amalgamation, and stb.
 - glad and imgui_md are vendored under `third_party/`.
-- Bundled fonts live under `assets/fonts/` and are found through the
-  `AB_ASSET_DIR` compile definition. Fontconfig is an optional Linux fallback.
+- Bundled fonts live under `assets/fonts/` and are embedded at build time by
+  `scripts/embed_fonts.py`; the executable needs no font files at runtime.
 - Optional Linux integrations are compile-time flags:
-  - `AB_HAVE_FONTCONFIG` — locate system fonts via fontconfig,
   - `AB_HAVE_X11`, `AB_HAVE_XINERAMA` — projection monitor targeting.
 - Our targets build with `-Wall -Wextra`; vendored code (imgui_md, stb,
   sqlite, glad) is not restyled and is built without the project warning flags.
 - `scripts/gen_compile_commands.sh` generates a clangd-friendly
   `compile_commands.json` at the repo root after every configure/build. It is
-  Linux-only and will need a guard for Windows and Android builds.
+  enabled only for desktop Unix builds.
+- Self-contained executables: fonts are embedded at build time; Linux links
+  libstdc++/libgcc statically; Windows uses the static MSVC runtime.
 - Cross-platform build status:
-  - Windows: MSVC + CMake with WGL; X11 and fontconfig disabled; built by the
+  - Windows: MSVC + CMake with WGL and static CRT; X11 disabled; built by the
     GitHub Actions job (hardware validation pending).
   - Android: Gradle + CMake `externalNativeBuild`, NativeActivity + EGL +
     OpenGL ES 3, `native_app_glue`, and a shared-library target; debug APK

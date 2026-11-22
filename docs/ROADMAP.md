@@ -20,8 +20,8 @@ what the game club needs at the table.
 - Default layout is built on first launch; layout can be reset at runtime.
 - X11 is preferred by default on Linux with an opt-in Wayland path via
   `AB_GLFW_PLATFORM=wayland`.
-- Bundled Liberation Sans/Mono fonts on every platform, with fontconfig and
-  DejaVu/Liberation path discovery as Linux fallbacks and an `AB_FONT` override.
+- Liberation Sans/Mono fonts embedded into every executable/library at build
+  time; no runtime font files or fontconfig dependency.
 
 ### Notes
 
@@ -130,7 +130,7 @@ what the game club needs at the table.
 - Notes/images roots, theme, and window size persisted.
 - CMake FetchContent for GLFW, Dear ImGui, MD4C, SQLite, and stb.
 - Vendored glad and imgui_md.
-- Optional fontconfig and X11/Xinerama integrations via `AB_HAVE_*` flags.
+- Optional X11/Xinerama integration via `AB_HAVE_*` flags.
 - Warning-clean project build with `-Wall -Wextra`.
 - clangd-friendly `compile_commands.json` generation.
 

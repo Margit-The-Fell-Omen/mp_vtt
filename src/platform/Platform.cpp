@@ -16,7 +16,6 @@ namespace platform {
 namespace {
 
 std::string g_androidDataDir;
-std::string g_bundledFontDir;
 
 #if !defined(_WIN32) && !defined(__ANDROID__)
 std::string shellSingleQuote(const std::string& s) {
@@ -98,14 +97,6 @@ std::string homeDir() {
 
 void setAndroidDataDir(const std::string& path) {
     g_androidDataDir = path;
-}
-
-void setBundledFontDir(const std::string& path) {
-    g_bundledFontDir = path;
-}
-
-std::string bundledFontDir() {
-    return g_bundledFontDir;
 }
 
 std::filesystem::path configDir() {

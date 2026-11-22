@@ -3,7 +3,7 @@
 > Status: **Phase 1–2 implemented; Phase 3 in progress.** Linux is still the
 > validated runtime platform. Windows build support and the shared Android
 > seams are in place. Android now builds a signed debug APK with the NDK and
-> has a NativeActivity/EGL host, soft keyboard, bundled font extraction, and
+> has a NativeActivity/EGL host, soft keyboard, embedded bundled fonts, and
 > app-private notes/images defaults. SAF storage, runtime validation, and
 > Presentation projection are still pending.
 
@@ -36,7 +36,7 @@
 | Desktop shell | Existing GLFW + OpenGL 3.3 |
 | Windows toolchain | MSVC + CMake |
 | Android delivery | Sideloaded APK |
-| Fonts | Bundle an OFL font family and use it on every platform |
+| Fonts | Embed an OFL font family into every executable/library |
 | Desktop data directory | Keep `~/.adventureboard/` on Windows and Linux |
 | Android data directory | App-private `activity->internalDataPath` (no home directory exists) |
 | Folder picker | Keep the in-app ImGui picker; add Windows drive enumeration; use SAF on Android |
@@ -54,9 +54,9 @@ src/platform/
   Platform.h/.cpp    config dir, URL open, path conversion, roots, file reads
   GL.h               glad on desktop, GLES3 on Android
   desktop/           DesktopStorage (std::filesystem)
-  android/           NativeActivity host, EGL, SAF Storage, JNI bridge (pending)
+  android/           NativeActivity host, EGL, JNI bridge; SAF pending
 android/             Gradle app, MainActivity.java, manifest
-assets/fonts/        bundled Liberation fonts + license
+assets/fonts/        Liberation fonts + license (embedded at build)
 ```
 
 Implemented so far:
@@ -70,7 +70,7 @@ Implemented so far:
   `ProjectionWindow`.
 - Lifecycle split into `initCore()` / `initGraphics()` and
   `shutdownGraphics()` / `shutdownCore()`.
-- Bundled Liberation Sans/Mono fonts used on every platform.
+- Embedded Liberation Sans/Mono fonts used on every platform.
 - CMake guards for Windows and Linux-only integrations, plus Linux/Windows
   GitHub Actions build jobs.
 - Android Gradle project, NativeActivity/EGL host, soft keyboard/Unicode JNI
@@ -95,7 +95,7 @@ Target: about 1–2 days.
 
 1. `CMakeLists.txt`
    - Find `Threads` before its first use.
-   - Restrict X11 and fontconfig detection to `UNIX AND NOT ANDROID`.
+   - Restrict X11 detection to `UNIX AND NOT ANDROID`.
    - Guard `regenerate_clangd_db` (bash + python) or make it optional.
    - Add Windows link requirements (`shell32`, `ole32`) and MSVC warning flags.
 2. `src/app/Application.cpp`
@@ -115,7 +115,7 @@ Target: about 1–2 days.
    - Enumerate drives with `GetLogicalDriveStringsW` on Windows.
    - Add a “Location” text field for jumping to a path.
 7. Fonts
-   - Load the bundled fonts; keep `AB_FONT` as a desktop override.
+   - Embed the bundled fonts into the executable; no runtime font lookup.
 
 Exit: MSVC CI passes; the app runs with notes, images, projection, and
 persistence on Windows; Linux is unchanged.
@@ -149,8 +149,8 @@ changes. Storage, lifecycle, GL includes, fonts, and the shared
    - Add GLSL ES 3 shader variants (`#version 300 es`, `precision highp float`,
      no `core` profile).
 5. Fonts
-   - Add `assets/fonts/` with an OFL family and its bold/italic variants plus a
-     monospace face.
+   - Embed the OFL family and its bold/italic variants plus a monospace face
+     at build time.
    - Load through `AddFontFromMemoryTTF` with `FontDataOwnedByAtlas = false`.
 
 Exit: Windows and Linux still build and behave identically; the desktop backend
@@ -242,7 +242,7 @@ the main UI context survives; surface loss and recreation recover cleanly.
 | Notes/images | Filesystem paths | Filesystem paths | SAF tree URIs |
 | App data | `~/.adventureboard` | `~/.adventureboard` | App internal storage |
 | URL opening | `xdg-open` | `ShellExecuteW` | Android `Intent` (planned) |
-| Fonts | Bundled + optional system | Bundled | Bundled from assets |
+| Fonts | Embedded | Embedded | Embedded |
 | Folder picker | In-app picker | In-app picker + drives | SAF picker |
 | Input | Keyboard + mouse | Keyboard + mouse | Touch + soft keyboard |
 

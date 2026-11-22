@@ -42,8 +42,9 @@ struct FontSet {
     ImFont* h1 = nullptr;         // level-1 headings (larger bold)
 };
 
-// Loads larger, sharper system fonts if available; falls back to the
-// default ImGui font (scaled up). Call once after ImGui::CreateContext().
+// Loads the embedded Liberation fonts; falls back to the default ImGui
+// font (scaled up) only if the embedded data is missing. Call once after
+// ImGui::CreateContext().
 void loadFonts(ImGuiIO& io);
 
 // Returns the loaded font set (valid after loadFonts()).

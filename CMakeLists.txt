@@ -11,7 +11,12 @@ endif()
 
 include(FetchContent)
 
+if(MSVC)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 find_package(Threads REQUIRED)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -23,6 +28,7 @@ if(NOT ANDROID)
   set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
   set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+  set(USE_MSVC_RUNTIME_LIBRARY_DLL OFF CACHE BOOL "" FORCE)
   if(UNIX AND NOT APPLE)
     find_program(AB_WAYLAND_SCANNER wayland-scanner)
     if(NOT AB_WAYLAND_SCANNER)
@@ -97,6 +103,33 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
+# Embedded fonts (self-contained executables)
+# ---------------------------------------------------------------------------
+set(AB_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
+set(AB_EMBEDDED_FONTS_CPP ${AB_GENERATED_DIR}/BundledFonts.cpp)
+set(AB_EMBEDDED_FONTS_H ${AB_GENERATED_DIR}/BundledFonts.h)
+set(AB_FONT_FILES
+  ${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/LiberationSans-Regular.ttf
+  ${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/LiberationSans-Bold.ttf
+  ${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/LiberationSans-Italic.ttf
+  ${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/LiberationSans-BoldItalic.ttf
+  ${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/LiberationMono-Regular.ttf
+  ${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/LICENSE-Liberation.txt
+)
+add_custom_command(
+  OUTPUT ${AB_EMBEDDED_FONTS_CPP} ${AB_EMBEDDED_FONTS_H}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${AB_GENERATED_DIR}
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/scripts/embed_fonts.py
+          ${AB_GENERATED_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts
+  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/scripts/embed_fonts.py ${AB_FONT_FILES}
+  COMMENT "Embedding bundled fonts"
+  VERBATIM
+)
+set_source_files_properties(${AB_EMBEDDED_FONTS_CPP} PROPERTIES GENERATED TRUE)
+set_source_files_properties(${AB_EMBEDDED_FONTS_H} PROPERTIES GENERATED TRUE HEADER_FILE_ONLY TRUE)
+
+# ---------------------------------------------------------------------------
 # Application
 # ---------------------------------------------------------------------------
 set(AB_COMMON_SOURCES
@@ -112,6 +145,8 @@ set(AB_COMMON_SOURCES
   src/platform/desktop/DesktopStorage.cpp
   src/projection/ImageStore.cpp
   src/projection/ProjectionRenderer.cpp
+  ${AB_EMBEDDED_FONTS_CPP}
+  ${AB_EMBEDDED_FONTS_H}
 )
 
 if(ANDROID)
@@ -128,6 +163,10 @@ else()
     src/projection/ProjectionWindow.cpp
   )
 endif()
+
+add_custom_target(AB_EMBEDDED_FONTS
+  DEPENDS ${AB_EMBEDDED_FONTS_CPP} ${AB_EMBEDDED_FONTS_H})
+add_dependencies(AdventureBoard AB_EMBEDDED_FONTS)
 
 # imgui_md is a vendored third-party library; build it without our
 # -Wall -Wextra flags so upstream warnings stay out of the output.
@@ -151,6 +190,7 @@ target_include_directories(AdventureBoard PRIVATE
   ${md4c_SOURCE_DIR}/src
   ${sqlite3_SOURCE_DIR}
   ${stb_SOURCE_DIR}
+  ${AB_GENERATED_DIR}
 )
 
 if(ANDROID)
@@ -187,15 +227,6 @@ target_sources(AdventureBoard PRIVATE
   ${sqlite3_SOURCE_DIR}/sqlite3.c
 )
 
-# Fontconfig is a Linux-only optional integration. Windows and Android use the
-# bundled fonts instead.
-if(UNIX AND NOT APPLE AND NOT ANDROID)
-  find_package(PkgConfig QUIET)
-  if(PkgConfig_FOUND)
-    pkg_check_modules(FONTCONFIG QUIET fontconfig)
-  endif()
-endif()
-
 if(ANDROID)
   target_link_libraries(AdventureBoard PRIVATE
     imgui_md
@@ -224,6 +255,10 @@ else()
   endif()
 endif()
 
+if(UNIX AND NOT APPLE AND NOT ANDROID)
+  target_link_options(AdventureBoard PRIVATE -static-libstdc++ -static-libgcc)
+endif()
+
 # X11 / Xinerama (projection fullscreen targeting on X11/XWayland).
 # Under XWayland, GLFW's monitor->Xinerama index mapping can be wrong when the
 # compositor scales outputs, so the projection window re-sends
@@ -243,22 +278,10 @@ if(UNIX AND NOT APPLE AND NOT ANDROID)
   endif()
 endif()
 
-if(FONTCONFIG_FOUND)
-  target_include_directories(AdventureBoard PRIVATE ${FONTCONFIG_INCLUDE_DIRS})
-  target_link_libraries(AdventureBoard PRIVATE ${FONTCONFIG_LIBRARIES})
-  target_compile_definitions(AdventureBoard PRIVATE AB_HAVE_FONTCONFIG=1)
-endif()
-
 if(ANDROID)
-  target_compile_definitions(AdventureBoard PRIVATE
-    IMGUI_IMPL_OPENGL_ES3
-    AB_ASSET_DIR=""
-  )
+  target_compile_definitions(AdventureBoard PRIVATE IMGUI_IMPL_OPENGL_ES3)
 else()
-  target_compile_definitions(AdventureBoard PRIVATE
-    GLFW_INCLUDE_NONE
-    AB_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"
-  )
+  target_compile_definitions(AdventureBoard PRIVATE GLFW_INCLUDE_NONE)
 endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
