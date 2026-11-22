@@ -23,6 +23,13 @@ if(NOT ANDROID)
   set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
   set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+  if(UNIX AND NOT APPLE)
+    find_program(AB_WAYLAND_SCANNER wayland-scanner)
+    if(NOT AB_WAYLAND_SCANNER)
+      message(STATUS "wayland-scanner not found; disabling GLFW Wayland backend")
+      set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE)
+    endif()
+  endif()
   FetchContent_Declare(
     glfw
     GIT_REPOSITORY https://github.com/glfw/glfw.git

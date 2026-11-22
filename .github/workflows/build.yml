@@ -21,14 +21,18 @@ jobs:
             libxrandr-dev \
             libxi-dev \
             libgl1-mesa-dev \
-            libfontconfig1-dev
+            libfontconfig1-dev \
+            libwayland-dev \
+            libwayland-bin \
+            wayland-protocols \
+            libxkbcommon-dev
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
       - name: Build
         run: cmake --build build
 
   windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - name: Configure
@@ -40,27 +44,44 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install CMake and Ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
+      - name: Configure Android SDK
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" -maxdepth 3 -name sdkmanager | head -n1)
+          if [ -z "$SDKMANAGER" ]; then
+            echo "sdkmanager not found under $SDK_ROOT" >&2
+            exit 1
+          fi
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+      - name: Accept SDK licenses
+        run: yes | "$SDKMANAGER" --licenses > /dev/null || true
       - name: Install SDK components
         run: |
-          sdkmanager "platforms;android-36" \
-                     "build-tools;36.1.0" \
-                     "ndk;29.0.14206865" \
-                     "cmake;3.22.1"
+          yes | "$SDKMANAGER" "platforms;android-36" \
+                              "build-tools;36.1.0" \
+                              "platform-tools" \
+                              "ndk;29.0.14206865"
       - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: 8.14.4
       - name: Configure local SDK paths
         run: |
           echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
-          echo "cmake.dir=$ANDROID_SDK_ROOT/cmake/3.22.1" >> android/local.properties
+          echo "cmake.dir=/usr" >> android/local.properties
       - name: Assemble debug APK
         working-directory: android
-        run: ./gradlew :app:assembleDebug --no-daemon
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
         with:
           name: adventure-board-debug-apk
